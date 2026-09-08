@@ -21,3 +21,4 @@ recall-core = { path = "../recall-core" }
 recall-adapters = { path = "../recall-adapters" }
 recall-store = { path = "../recall-store" }
 recall-index = { path = "../recall-index" }
+clap = { version = "4.6.6", features = ["derive"] }
