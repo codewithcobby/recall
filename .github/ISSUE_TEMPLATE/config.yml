@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private disclosure)
+    url: https://github.com/codewithcobby/recall/security/advisories/new
+    about: Recall reads local AI session transcripts. Report anything that could leak, corrupt, or exfiltrate them privately — never in a public issue.
+  - name: Question or idea
+    url: https://github.com/codewithcobby/recall/discussions
+    about: Open-ended questions, design discussion, and "should Recall do X?" belong in Discussions.

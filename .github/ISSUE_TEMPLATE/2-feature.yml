@@ -1,0 +1,97 @@
+name: Feature request
+description: Propose new functionality for Recall.
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Recall's core is **deterministic preservation and retrieval** — discover, capture,
+        normalize, compress, index, retrieve. Proposals are weighed against three
+        constraints: local-first, provider-independent, and useful without an LLM.
+        A feature that breaks one of those needs a strong argument.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What should Recall do instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: cli
+    attributes:
+      label: Proposed CLI surface
+      description: If this adds or changes a command, sketch the invocation and its output.
+      render: shell
+      placeholder: |
+        $ recall continue --since HEAD~5
+        3 sessions on fix/123-payment-orchestrator ...
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer does this touch?
+      multiple: true
+      options:
+        - Discovery
+        - Provider adapter
+        - Session model / normalization
+        - Archive / compression
+        - Index / database
+        - Search
+        - Git context
+        - CLI
+        - Documentation
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Consistency with Recall's principles
+      description: Tick every statement that holds. Leave unticked what doesn't, and explain below.
+      options:
+        - label: Works entirely offline, with no account and no external service.
+        - label: Does not tie Recall to one AI provider's session format.
+        - label: Does not require an LLM for the core behaviour.
+        - label: Does not change or delete the provider's own session files.
+
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Trade-offs and alternatives
+      description: What did you consider and reject? What breaks or gets slower if this ships?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable conditions that make this "done".
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for a duplicate.
+          required: true
+        - label: This is a concrete proposal, not an open-ended question (those belong in Discussions).
+          required: true
