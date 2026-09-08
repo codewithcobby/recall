@@ -1,0 +1,5 @@
+# Pins the toolchain for everyone working on Recall and for CI, so a formatting
+# or lint difference is a real difference and not a version mismatch.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
