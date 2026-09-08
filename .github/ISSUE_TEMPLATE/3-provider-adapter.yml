@@ -1,0 +1,102 @@
+name: Provider adapter
+description: Request or report a problem with support for an AI coding agent's session format.
+title: "[adapter] "
+labels: ["adapter", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Recall reads each agent's own session history and converts it to one internal
+        representation. Adapters are **read-only**: an adapter must never modify, move,
+        or delete the provider's files. Use this template for a new agent, a format
+        change in an existing agent, or a field Recall fails to capture.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - New provider adapter
+        - Existing adapter misparses sessions
+        - Provider changed its on-disk format
+        - Adapter drops or mangles a field
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider / agent
+      placeholder: "Claude Code, Codex, Gemini CLI, Aider, Cursor, ..."
+    validations:
+      required: true
+
+  - type: input
+    id: provider-version
+    attributes:
+      label: Provider version
+      description: The agent's version, not Recall's. Session formats change between releases.
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Where does this agent store sessions?
+      description: Absolute paths per OS, with the directory layout. Replace your username with `~`.
+      render: text
+      placeholder: |
+        macOS/Linux: ~/.<agent>/projects/<slugified-cwd>/<session-uuid>.jsonl
+        Windows:     %APPDATA%\<agent>\projects\...
+    validations:
+      required: true
+
+  - type: textarea
+    id: format
+    attributes:
+      label: Format description
+      description: File type (JSONL, JSON, SQLite, ...), one record per line vs per session, encoding, and how a session's start/end are delimited.
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Redacted sample record
+      description: |
+        A few representative records with **all conversation content replaced by placeholders**.
+        Keep the keys and shapes; remove the prose, code, and paths.
+      render: json
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: coverage
+    attributes:
+      label: Which parts of Recall's session model can this format supply?
+      options:
+        - label: User messages
+        - label: Assistant responses
+        - label: Tool calls and tool results
+        - label: Commands executed by the agent
+        - label: Files read / created / modified / deleted
+        - label: Session start and end timestamps
+        - label: Model identifier
+        - label: Working directory or project path
+        - label: Git branch or commit
+
+  - type: textarea
+    id: gaps
+    attributes:
+      label: Known gaps or ambiguities
+      description: Fields this format cannot express, records Recall would have to infer, or anything unstable across provider versions.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: The sample above contains no real conversation content, source code, paths, or credentials.
+          required: true
+        - label: I confirmed Recall would only need read access to these files.
+          required: true

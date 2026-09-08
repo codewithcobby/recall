@@ -1,0 +1,57 @@
+name: Documentation
+description: Missing, wrong, or confusing documentation.
+title: "[docs] "
+labels: ["documentation", "needs-triage"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - Missing documentation
+        - Incorrect documentation
+        - Confusing or ambiguous wording
+        - Outdated (describes behaviour that changed)
+        - Broken link or reference
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File and heading, a rustdoc item path, or the command whose `--help` is wrong.
+      placeholder: "README.md > Local Archive, or recall::adapter::Adapter, or `recall sync --help`"
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What it says now
+      description: Quote it. Write "nothing — this is undocumented" if it is missing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should say
+    validations:
+      required: true
+
+  - type: textarea
+    id: audience
+    attributes:
+      label: Who is blocked by this
+      placeholder: "Someone writing a third-party provider adapter, ..."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the latest `dev`, not a released version.
+          required: true
+        - label: I searched open and closed issues for a duplicate.
+          required: true
