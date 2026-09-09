@@ -1,0 +1,18 @@
+{"type":"ai-title","aiTitle":"placeholder title","sessionId":"bookkeeping"}
+{"type":"custom-title","customTitle":"placeholder","sessionId":"bookkeeping"}
+{"type":"mode","mode":"normal","sessionId":"bookkeeping"}
+{"type":"permission-mode","permissionMode":"default","sessionId":"bookkeeping"}
+{"type":"agent-name","agentName":"placeholder","sessionId":"bookkeeping"}
+{"type":"agent-setting","agentSetting":{},"sessionId":"bookkeeping"}
+{"type":"worktree-state","worktreeSession":{},"sessionId":"bookkeeping"}
+{"type":"pr-link","sessionId":"bookkeeping","prNumber":1,"prUrl":"https://example.invalid/1","prRepository":"example/repo","timestamp":"2026-09-08T12:00:00.000Z"}
+{"type":"atis-latch","atis":{},"sessionId":"bookkeeping"}
+{"type":"bridge-session","sessionId":"bookkeeping","bridgeSessionId":"b1","lastSequenceNum":1}
+{"type":"file-history-delta","messageId":"m1","snapshotMessageId":"s1","trackingPath":"/w/demo","backup":{},"timestamp":"2026-09-08T12:00:00.000Z"}
+{"type":"file-history-snapshot","messageId":"m1","snapshot":{},"isSnapshotUpdate":false}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-08T12:00:00.000Z","sessionId":"bookkeeping"}
+{"type":"relocated","sessionId":"bookkeeping","relocatedCwd":"/w/elsewhere"}
+{"type":"cost-state","sessionId":"bookkeeping","totalCostUSD":0,"totalAPIDuration":0,"totalAPIDurationWithoutRetries":0,"totalToolDuration":0,"totalLinesAdded":0,"totalLinesRemoved":0,"totalDuration":0,"startTime":"2026-09-08T12:00:00.000Z","modelUsage":{},"hasUnknownModelCost":false}
+{"type":"history-suppression","sessionId":"bookkeeping","cause":"placeholder","ts":1}
+{"type":"last-prompt","leafUuid":"u1","sessionId":"bookkeeping"}
+{"type":"user","uuid":"u1","timestamp":"2026-09-08T12:00:00.000Z","cwd":"/w/demo","sessionId":"bookkeeping","message":{"role":"user","content":"the only real message"}}

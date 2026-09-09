@@ -1,0 +1,4 @@
+{"type":"attachment","uuid":"x1","timestamp":"2026-09-08T12:00:00.000Z","cwd":"/w/demo","sessionId":"att","attachment":{"type":"total_tokens_reminder","text":"placeholder reminder"}}
+{"type":"attachment","uuid":"x2","timestamp":"2026-09-08T12:00:01.000Z","cwd":"/w/demo","sessionId":"att","attachment":{"type":"task_reminder","itemCount":3}}
+{"type":"attachment","uuid":"x3","timestamp":"2026-09-08T12:00:02.000Z","cwd":"/w/demo","sessionId":"att","attachment":{"type":"edited_text_file","filename":"src/fetch.rs","snippet":"pub async fn fetch() {}"}}
+{"type":"attachment","uuid":"x4","timestamp":"2026-09-08T12:00:03.000Z","cwd":"/w/demo","sessionId":"att","attachment":{"type":"an_unknown_kind","text":"kept because unknown types are preserved"}}
