@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
+use crate::event::SessionEvent;
+
 /// Recall's identifier for a session.
 ///
 /// Not the provider's id. Provider ids are unusable as filenames: they may
@@ -183,6 +185,8 @@ pub struct Session {
     pub project: Option<PathBuf>,
     /// Repository state, when the session ran inside one.
     pub git: Option<GitContext>,
+    /// What happened, in the order it happened.
+    pub events: Vec<SessionEvent>,
 }
 
 impl Session {
@@ -205,6 +209,7 @@ impl Session {
             ended_at: None,
             project: None,
             git: None,
+            events: Vec::new(),
         }
     }
 
@@ -221,6 +226,11 @@ impl Session {
     /// How long the session lasted, when it has ended.
     pub fn duration(&self) -> Option<time::Duration> {
         self.ended_at.map(|end| end - self.started_at)
+    }
+
+    /// How many events the session holds.
+    pub fn event_count(&self) -> usize {
+        self.events.len()
     }
 }
 
@@ -354,5 +364,56 @@ mod tests {
             ..Default::default()
         }
         .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    use crate::event::SessionEvent;
+    use time::macros::datetime;
+
+    #[test]
+    fn a_new_session_holds_no_events() {
+        let s = Session::new(
+            Provider::new("claude-code").unwrap(),
+            "abc",
+            datetime!(2026-09-08 12:00:00 UTC),
+        );
+        assert_eq!(s.event_count(), 0);
+        assert!(s.events.is_empty());
+    }
+
+    #[test]
+    fn events_keep_the_order_they_were_added_in() {
+        // Order is the transcript. Sorting or deduplicating it would destroy
+        // the thing being preserved.
+        let mut s = Session::new(
+            Provider::new("claude-code").unwrap(),
+            "abc",
+            datetime!(2026-09-08 12:00:00 UTC),
+        );
+        s.events = vec![
+            SessionEvent::UserMessage {
+                at: None,
+                content: "first".into(),
+            },
+            SessionEvent::AssistantMessage {
+                at: None,
+                content: "second".into(),
+            },
+            SessionEvent::UserMessage {
+                at: None,
+                content: "third".into(),
+            },
+        ];
+
+        let text: Vec<_> = s
+            .events
+            .iter()
+            .filter_map(|e| e.searchable_text())
+            .collect();
+        assert_eq!(text, ["first", "second", "third"]);
+        assert_eq!(s.event_count(), 3);
     }
 }

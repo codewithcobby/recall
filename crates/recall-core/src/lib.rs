@@ -6,6 +6,8 @@
 //! crates that implement its traits — see the dependency direction in
 //! `.github/CONTRIBUTING.md`.
 
+pub mod event;
 pub mod session;
 
+pub use event::{FileAction, SessionEvent};
 pub use session::{GitContext, Provider, ProviderError, Session, SessionId};
