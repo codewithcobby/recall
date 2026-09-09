@@ -172,3 +172,116 @@ work had been done.
 - [ ] `.gitignore` is never modified
 - [ ] A file named `.recall` is refused, not clobbered
 - [ ] `sync` and `sessions` exit 3
+
+---
+
+## Phase 2 — the session model
+
+Implemented by #10, #11 and #12.
+
+Nothing here is reachable from the CLI. `Session`, `SessionEvent` and the JSON
+Lines format are library types, and no command touches them until `recall sync`
+in Phase 6. What Phase 2 settles is the *shape* of a session and how one is
+written down — so the way to inspect it is to build one and look at it.
+
+### 1. Run the example
+
+```bash
+cargo run --example session_roundtrip
+```
+
+It builds a session with every event variant, writes it, prints the result, reads
+it back, and then tries to break it four different ways.
+
+### 2. Read the metadata block
+
+```text
+  id            7d5e57020a19ce9b19891dcdc613cdd4
+  provider      claude-code
+  provider's id abc-123
+  archive date  (2026, 9, 8)   <- UTC year/month/day
+  duration      Some(150) minutes
+  events        7
+```
+
+Two things to notice.
+
+The **id is not the provider's id**. It is derived from the provider name and
+their id together, and it is always 32 lowercase hex characters. That is what
+makes it safe as a filename on every platform — a provider id can contain path
+separators, characters Windows rejects, or differ only by case.
+
+The **archive date is UTC**. The session starts at 12:00 UTC here, so it files
+under `2026/09/08`. Change the start in the example to
+`datetime!(2026-09-09 01:30:00 +05:00)` and re-run: the date must still be
+`(2026, 9, 8)`, because 01:30 on the 9th in a +05:00 zone is the 8th in UTC.
+Filing by local time would put the same session in different directories
+depending on where the machine was.
+
+### 3. Read the on-disk block
+
+```text
+  header {"format":1,"session":{"id":"7d5e5702…","provider":"claude-code",…
+  event  {"kind":"user","at":"2026-09-08T12:00:05Z","content":"refactor the payment orchestrator"}
+  event  {"kind":"tool_call","name":"read_file","arguments":"{\"path\":\"src/payments.rs\"}",…
+  event  {"kind":"file_change","action":"modified","path":"src/payments.rs"}
+```
+
+**One line per event, and readable.** Both matter. Line-delimited is what lets
+Phase 4 compress and decompress a session a piece at a time instead of holding a
+whole transcript in memory. Readable is what lets someone inspect a damaged
+archive by hand.
+
+Note the tool call keeps its arguments verbatim, as text. Recall does not
+reinterpret what an agent asked a tool to do.
+
+### 4. Confirm the round trip
+
+```text
+  identical to what we wrote: true
+```
+
+Anything other than `true` is data loss.
+
+### 5. Confirm damaged files are refused
+
+```text
+  tampered id      refused: session id … does not match the provider fields it should derive from …
+  truncated file   refused: line 8 is not a valid session record
+  future version   refused: session format version 99 is not supported (this build reads 1)
+  empty file       refused: session file is empty
+```
+
+**This is the section worth reading carefully.** Every line must say `refused`.
+An `ACCEPTED` anywhere is a bug, and a serious one: it would mean Recall handing
+back a partial or wrong session as though it were the real thing, which is the
+failure mode `.github/SECURITY.md` commits to never allowing.
+
+The tampered-id case is the subtle one. The id is derived from the provider
+fields stored beside it, so the two cannot disagree unless the file was edited or
+corrupted. Checking on read turns a silently wrong archive into a loud one.
+
+### 6. Break it yourself
+
+Worth a few minutes, since these are the cases a line-delimited format gets wrong:
+
+- Add an event whose `content` contains a newline. The output must still be one
+  line per event — the newline is escaped, not emitted raw.
+- Add an event whose content is itself JSON, such as
+  `{"kind":"user","content":"hi"}` as a *string*. It must round-trip as text and
+  not be mistaken for a record.
+- Change `Provider::new("claude-code")` to `Provider::new("Claude Code")`. It must
+  fail: provider names are lowercase letters, digits and hyphens only, so a name
+  can never widen what an id or a path may contain.
+
+### Phase 2 checklist
+
+- [ ] The session id is 32 lowercase hex characters, not the provider's id
+- [ ] The archive date is UTC, including for a session started just after midnight in a positive offset
+- [ ] The header is one line and every event is one line
+- [ ] Tool call arguments are stored verbatim
+- [ ] The round trip reports `true`
+- [ ] A tampered id is refused
+- [ ] A truncated file is refused, naming the line
+- [ ] An unsupported format version is refused
+- [ ] An empty file is refused rather than read as an empty session
