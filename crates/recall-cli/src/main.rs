@@ -11,6 +11,7 @@ mod exit;
 mod sessions;
 mod show;
 mod sync;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -59,6 +60,14 @@ enum Command {
         #[arg(long)]
         summary: bool,
     },
+    /// Check that archived sessions are still readable.
+    ///
+    /// Reads every archive in full, unlike `recall sessions`, which reads only
+    /// each one's first line.
+    Verify {
+        /// A session id or prefix. Omit to check every archive.
+        session: Option<String>,
+    },
     /// Search archived sessions.
     Search {
         /// What to look for.
@@ -74,6 +83,7 @@ impl Command {
             Command::Sync => None,
             Command::Sessions => None,
             Command::Show { .. } => None,
+            Command::Verify { .. } => None,
             Command::Search { .. } => Some(38),
         }
     }
@@ -84,6 +94,7 @@ impl Command {
             Command::Sync => "sync",
             Command::Sessions => "sessions",
             Command::Show { .. } => "show",
+            Command::Verify { .. } => "verify",
             Command::Search { .. } => "search",
         }
     }
@@ -125,6 +136,7 @@ fn main() -> ExitCode {
         Command::Sync => run_sync(),
         Command::Sessions => run_sessions(),
         Command::Show { session, summary } => run_show(&session, summary),
+        Command::Verify { session } => run_verify(session.as_deref()),
         // Every other command returned above.
         _ => unreachable!("handled by the tracking-issue branch"),
     };
@@ -153,6 +165,42 @@ fn run_show(session: &str, summary: bool) -> Result<()> {
     let project_root =
         std::env::current_dir().context("could not determine the current directory")?;
     show::show(&project_root, session, summary)
+}
+
+/// `recall verify`
+fn run_verify(session: Option<&str>) -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    let report = verify::verify(&project_root, session)?;
+
+    if report.checked() == 0 {
+        println!("No sessions archived yet — run `recall sync`");
+        return Ok(());
+    }
+
+    println!(
+        "{} session{} checked: {} readable, {} damaged",
+        report.checked(),
+        if report.checked() == 1 { "" } else { "s" },
+        report.readable,
+        report.damaged.len()
+    );
+
+    if report.damaged.is_empty() {
+        return Ok(());
+    }
+
+    println!();
+    for damaged in &report.damaged {
+        println!("  {}  {}", damaged.id, damaged.reason);
+    }
+
+    // A damaged archive is data loss, and a script should be able to notice
+    // without reading English.
+    Err(exit::Problem::ArchivesDamaged {
+        count: report.damaged.len(),
+    }
+    .into())
 }
 
 /// `recall sync`

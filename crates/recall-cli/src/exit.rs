@@ -46,6 +46,9 @@ pub enum Problem {
         count: usize,
         listed: String,
     },
+
+    #[error("{count} archive{} could not be read", if *.count == 1 { "" } else { "s" })]
+    ArchivesDamaged { count: usize },
 }
 
 impl Problem {
@@ -55,6 +58,8 @@ impl Problem {
             Problem::NotInitialized { .. } => NOT_INITIALIZED,
             Problem::NoSuchSession { .. } => NOT_FOUND,
             Problem::AmbiguousSession { .. } => AMBIGUOUS,
+            // Data loss, and a script should notice without reading English.
+            Problem::ArchivesDamaged { .. } => DAMAGED,
         }
     }
 }
