@@ -1,0 +1,29 @@
+# Virtual manifest. Recall's code lives in the crates under crates/; this file
+# only describes the workspace and the settings they share.
+#
+# Dependency direction, documented in .github/CONTRIBUTING.md: recall-core owns
+# the domain types and traits, recall-adapters / recall-store / recall-index
+# implement them, and recall-cli composes. recall-core must never depend on a
+# sibling crate.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/codewithcobby/recall"
+homepage = "https://github.com/codewithcobby/recall"
+authors = ["Frank K. Abrokwa"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+# Archives are written once and read rarely, and the binary ships to users, so
+# trade build time for a smaller, faster release build.
+lto = "thin"
+strip = "symbols"
