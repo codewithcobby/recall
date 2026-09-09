@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use recall_core::SessionId;
+
 /// The archive directory, relative to the project root.
 pub const ARCHIVE_DIR: &str = ".recall";
 
@@ -23,6 +25,16 @@ pub const TMP_DIR: &str = "tmp";
 
 /// The derived metadata index.
 pub const INDEX_FILE: &str = "index.db";
+
+/// Extension for an uncompressed session archive.
+///
+/// The encoding is named by the extension, so a reader knows how to decode a
+/// file before opening it. Zstandard archives (`.zst`) arrive in #16; until
+/// then everything is written uncompressed, and readers accept both.
+pub const SESSION_EXTENSION: &str = "jsonl";
+
+/// Extension for a Zstandard-compressed session archive (#16).
+pub const COMPRESSED_SESSION_EXTENSION: &str = "zst";
 
 /// The archive layout this build understands.
 ///
@@ -67,6 +79,24 @@ impl Layout {
     /// `.recall/index.db`
     pub fn index(&self) -> PathBuf {
         self.root.join(INDEX_FILE)
+    }
+
+    /// Where a session archived on this UTC date belongs.
+    ///
+    /// `date` is `(year, month, day)` in UTC, as
+    /// [`Session::archive_date`](recall_core::Session::archive_date) returns.
+    pub fn session_dir(&self, date: (i32, u8, u8)) -> PathBuf {
+        let (year, month, day) = date;
+        self.sessions()
+            .join(format!("{year:04}"))
+            .join(format!("{month:02}"))
+            .join(format!("{day:02}"))
+    }
+
+    /// The full path an uncompressed session is written to.
+    pub fn session_path(&self, date: (i32, u8, u8), id: &SessionId) -> PathBuf {
+        self.session_dir(date)
+            .join(format!("{}.{}", id, SESSION_EXTENSION))
     }
 
     /// The directories `recall init` creates, outermost first.
