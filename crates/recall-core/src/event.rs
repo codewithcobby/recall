@@ -10,10 +10,12 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 /// What an agent did to a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FileAction {
     /// The file was read into the session.
     Read,
@@ -41,22 +43,43 @@ impl FileAction {
 ///
 /// Timestamps are optional throughout: plenty of formats record ordering
 /// without recording a clock, and an invented timestamp is worse than none.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Tagged by kind, so a line in the archive says what it is before it says
+// anything else, and an unknown tag fails loudly instead of silently matching
+// the wrong variant.
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionEvent {
     /// Something the person said to the agent.
+    #[serde(rename = "user")]
     UserMessage {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
         content: String,
     },
 
     /// Something the agent said back.
+    #[serde(rename = "assistant")]
     AssistantMessage {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
         content: String,
     },
 
     /// The agent invoked a tool.
     ToolCall {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
         /// The tool's name as the provider recorded it.
         name: String,
@@ -74,6 +97,11 @@ pub enum SessionEvent {
 
     /// What a tool returned.
     ToolResult {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
         /// Links back to the [`SessionEvent::ToolCall`], when available.
         call_id: Option<String>,
@@ -89,6 +117,11 @@ pub enum SessionEvent {
     /// Separate from a tool call because "what did this agent actually run
     /// against my machine" is a question worth answering directly.
     Command {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
         command: String,
         exit_code: Option<i32>,
@@ -96,7 +129,13 @@ pub enum SessionEvent {
     },
 
     /// A file the agent read or changed.
+    #[serde(rename = "file_change")]
     FileChange {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
         action: FileAction,
         /// The path as the provider recorded it.
@@ -113,9 +152,14 @@ pub enum SessionEvent {
     /// rather than drop it, because dropping is the one thing an archive must
     /// never do.
     Other {
+        #[serde(
+            with = "time::serde::rfc3339::option",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         at: Option<OffsetDateTime>,
-        /// What kind of record this was, in the provider's own vocabulary.
-        kind: String,
+        /// What the provider called this record, in its own vocabulary.
+        provider_kind: String,
         content: String,
     },
 }
@@ -205,7 +249,7 @@ mod tests {
             },
             SessionEvent::Other {
                 at,
-                kind: "system_prompt".into(),
+                provider_kind: "system_prompt".into(),
                 content: "be helpful".into(),
             },
         ];

@@ -7,7 +7,9 @@
 //! `.github/CONTRIBUTING.md`.
 
 pub mod event;
+pub mod format;
 pub mod session;
 
 pub use event::{FileAction, SessionEvent};
+pub use format::{read_session, write_session, FormatError, SESSION_FORMAT_VERSION};
 pub use session::{GitContext, Provider, ProviderError, Session, SessionId};

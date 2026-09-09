@@ -11,6 +11,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
@@ -23,7 +24,7 @@ use crate::event::SessionEvent;
 /// which collides on a case-insensitive filesystem. This is derived from the
 /// provider and its id, and is always 32 lowercase hex characters — safe on
 /// every supported platform, and stable across machines and runs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SessionId(String);
 
 /// Changing this changes every session id, so it is versioned deliberately.
@@ -92,7 +93,10 @@ pub enum ProviderError {
 /// A validated name rather than an enum on purpose. An enum in this crate would
 /// mean adding a variant here for every new adapter, which is exactly the
 /// provider knowledge the core is supposed to be free of.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+// Re-validated on the way in: a provider name read off disk gets the same
+// checks as one supplied by an adapter.
+#[serde(try_from = "String", into = "String")]
 pub struct Provider(String);
 
 impl Provider {
@@ -129,6 +133,20 @@ impl Provider {
     }
 }
 
+impl TryFrom<String> for Provider {
+    type Error = ProviderError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Provider::new(value)
+    }
+}
+
+impl From<Provider> for String {
+    fn from(value: Provider) -> Self {
+        value.0
+    }
+}
+
 impl fmt::Display for Provider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -139,7 +157,7 @@ impl fmt::Display for Provider {
 ///
 /// Every field is optional: a session may happen outside a repository, in one
 /// with no commits, or on a detached HEAD. Populated in #32.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitContext {
     /// Path to the repository root.
     pub repository: Option<PathBuf>,
@@ -162,7 +180,7 @@ impl GitContext {
 }
 
 /// One archived AI coding session.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     /// Recall's identifier, derived from `provider` and `provider_session_id`.
     pub id: SessionId,
@@ -178,14 +196,20 @@ pub struct Session {
     /// session without one cannot be stored. An adapter whose format has no
     /// explicit start must derive one from the session's own contents — the
     /// first event's timestamp, say. That is derivation, not invention.
+    #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
     /// When the session ended, if it has.
+    #[serde(with = "time::serde::rfc3339::option", default)]
     pub ended_at: Option<OffsetDateTime>,
     /// The project the session was working on.
     pub project: Option<PathBuf>,
     /// Repository state, when the session ran inside one.
     pub git: Option<GitContext>,
     /// What happened, in the order it happened.
+    ///
+    /// Not part of the header line: events are written one per line after it,
+    /// so neither writing nor reading has to hold a whole transcript in memory.
+    #[serde(skip)]
     pub events: Vec<SessionEvent>,
 }
 
