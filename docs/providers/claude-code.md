@@ -21,6 +21,27 @@ UUID-named JSON Lines.
 extension. Assuming everything under `projects/` is a session would archive
 things that are not.
 
+### Sub-agent transcripts
+
+Work done by sub-agents is stored separately, beside the session it belongs to:
+
+```text
+~/.claude/projects/<slugified-cwd>/<session-uuid>/subagents/<task-uuid>.jsonl
+```
+
+**This is most of the data.** In the installation this adapter was written
+against, 121 of 158 session files were sub-agent transcripts. Discovering only
+the top-level files silently drops three quarters of the archived work — which
+is exactly what the first version of discovery did, until it was checked against
+a real installation.
+
+They are not separate sessions. Their content records carry
+`isSidechain: true`, and the `sessionId` inside them is the **parent's**, not
+their own filename — the filename is the task's id. So they are attached to the
+session they belong to rather than reported alongside it.
+
+They also introduce a record type not seen at the top level: `fork-context-ref`.
+
 ## Records
 
 One JSON object per line. **21 distinct `type` values**, of which four carry

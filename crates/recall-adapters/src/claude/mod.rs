@@ -16,9 +16,12 @@
 //!
 //! Discovery lands in #20, parsing in #21, normalization in #22.
 
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use recall_core::{Adapter, AdapterError, DiscoveredSession, Provider, Session};
+use time::OffsetDateTime;
 
 /// The provider name Claude Code sessions are recorded under.
 pub const PROVIDER: &str = "claude-code";
@@ -31,6 +34,19 @@ pub const PROJECTS_SUBDIRECTORY: &str = "projects";
 
 /// Extension of a Claude Code session file.
 pub const SESSION_EXTENSION: &str = "jsonl";
+
+/// Directory beside a session holding its sub-agent transcripts.
+///
+/// Claude Code stores work done by sub-agents in
+/// `<session-uuid>/subagents/<task-uuid>.jsonl`. Those records carry the
+/// *parent* session's `sessionId` and `isSidechain: true`, so they are part of
+/// the session rather than sessions of their own.
+///
+/// This matters more than it looks: in the installation this adapter was
+/// written against, 121 of 158 session files were sub-agent transcripts.
+/// Discovering only the top-level files would have silently dropped three
+/// quarters of the archived work.
+pub const SUBAGENTS_SUBDIRECTORY: &str = "subagents";
 
 /// Reads Claude Code's session history.
 #[derive(Debug, Clone)]
@@ -91,8 +107,44 @@ impl Adapter for ClaudeCode {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>, AdapterError> {
-        // #20
-        Ok(Vec::new())
+        let Some(projects) = self.projects_directory() else {
+            // No home directory to resolve. Not an error: there is simply
+            // nothing to read.
+            return Ok(Vec::new());
+        };
+
+        let mut found = Vec::new();
+        for project_dir in read_directory(&projects)? {
+            if !project_dir.is_dir() {
+                // projects/ holds stray files too. They are not sessions.
+                continue;
+            }
+            let project = project_from_directory_name(&project_dir);
+
+            for entry in read_directory(&project_dir)? {
+                if entry.extension().and_then(|e| e.to_str()) != Some(SESSION_EXTENSION) {
+                    continue;
+                }
+                if !entry.is_file() {
+                    continue;
+                }
+                let Some(id) = entry.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+
+                found.push(DiscoveredSession {
+                    provider_session_id: id.to_string(),
+                    modified: modified_at(&entry),
+                    project: project.clone(),
+                    additional_paths: subagent_transcripts(&project_dir, id)?,
+                    path: entry,
+                });
+            }
+        }
+
+        // Stable order, so two runs report the same thing.
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(found)
     }
 
     fn load(&self, discovered: &DiscoveredSession) -> Result<Session, AdapterError> {
@@ -102,6 +154,82 @@ impl Adapter for ClaudeCode {
             provider_session_id: discovered.provider_session_id.clone(),
         })
     }
+}
+
+/// Sub-agent transcripts belonging to one session.
+///
+/// They live in `<project>/<session-uuid>/subagents/`, and their records carry
+/// the parent session's id, so they are part of that session rather than
+/// sessions in their own right.
+fn subagent_transcripts(
+    project_dir: &Path,
+    session_id: &str,
+) -> Result<Vec<PathBuf>, AdapterError> {
+    let dir = project_dir.join(session_id).join(SUBAGENTS_SUBDIRECTORY);
+    let mut found: Vec<PathBuf> = read_directory(&dir)?
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(SESSION_EXTENSION))
+        .filter(|p| p.is_file())
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
+/// List a directory, treating "not there" as empty rather than as a failure.
+///
+/// A missing directory means Claude Code is not installed, or has never run in
+/// any project. Both are ordinary conditions during a sync.
+fn read_directory(dir: &Path) -> Result<Vec<PathBuf>, AdapterError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        // Unreadable is different from absent, and worth saying so.
+        Err(source) => {
+            return Err(AdapterError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })
+        }
+    };
+
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| AdapterError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        paths.push(entry.path());
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Recover the project path from a slugified directory name.
+///
+/// Claude Code encodes the working directory by replacing separators with `-`,
+/// so `/Users/me/work` becomes `-Users-me-work`. That transformation loses
+/// information: a directory whose real name contains a hyphen is
+/// indistinguishable from a separator, so `-Users-me-my-project` could be
+/// `/Users/me/my/project` or `/Users/me/my-project`.
+///
+/// Recall therefore reports the decoded path as a best-effort hint and does not
+/// treat it as authoritative. The `cwd` recorded inside the session is exact,
+/// and #22 uses that instead. Nothing here is ever opened.
+fn project_from_directory_name(dir: &Path) -> Option<PathBuf> {
+    let name = dir.file_name()?.to_str()?;
+    if !name.starts_with('-') {
+        return None;
+    }
+    Some(PathBuf::from(name.replace('-', "/")))
+}
+
+/// When the file was last written, if the filesystem will say.
+fn modified_at(path: &Path) -> Option<OffsetDateTime> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()
+        .and_then(|t| OffsetDateTime::from(t).into())
 }
 
 /// The user's home directory.
@@ -150,11 +278,246 @@ mod tests {
         );
     }
 
+    /// A fake Claude Code home. No test touches the real one.
+    fn claude_home() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp dir")
+    }
+
+    /// Put a session file where Claude Code would put it.
+    fn session_file(home: &Path, project: &str, id: &str, contents: &str) -> PathBuf {
+        let dir = home.join(PROJECTS_SUBDIRECTORY).join(project);
+        fs::create_dir_all(&dir).expect("create project directory");
+        let path = dir.join(format!("{id}.{SESSION_EXTENSION}"));
+        fs::write(&path, contents).expect("write session");
+        path
+    }
+
     #[test]
-    fn discovery_finds_nothing_before_it_is_implemented() {
-        // Deliberate: an unimplemented adapter reports no sessions rather than
-        // pretending, and a sync over it archives nothing.
-        let adapter = ClaudeCode::rooted_at("/somewhere/.claude");
+    fn no_claude_directory_means_no_sessions_not_an_error() {
+        // Claude Code is simply not installed. A sync over this archives
+        // nothing and carries on to the next provider.
+        let home = claude_home();
+        let adapter = ClaudeCode::rooted_at(home.path().join("absent"));
         assert!(adapter.discover().expect("discover").is_empty());
+    }
+
+    #[test]
+    fn an_empty_projects_directory_yields_nothing() {
+        let home = claude_home();
+        fs::create_dir_all(home.path().join(PROJECTS_SUBDIRECTORY)).expect("mkdir");
+        let adapter = ClaudeCode::rooted_at(home.path());
+        assert!(adapter.discover().expect("discover").is_empty());
+    }
+
+    #[test]
+    fn session_files_are_found_across_projects() {
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-alpha", "aaaa-1111", "{}\n");
+        session_file(home.path(), "-Users-me-beta", "bbbb-2222", "{}\n");
+        session_file(home.path(), "-Users-me-beta", "cccc-3333", "{}\n");
+
+        let adapter = ClaudeCode::rooted_at(home.path());
+        let found = adapter.discover().expect("discover");
+
+        let mut ids: Vec<_> = found
+            .iter()
+            .map(|d| d.provider_session_id.clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["aaaa-1111", "bbbb-2222", "cccc-3333"]);
+    }
+
+    #[test]
+    fn only_session_files_are_reported() {
+        // projects/ holds other things: transcripts exported to markdown,
+        // scratch json, notes. None of them are sessions.
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-alpha", "real-session", "{}\n");
+        let dir = home
+            .path()
+            .join(PROJECTS_SUBDIRECTORY)
+            .join("-Users-me-alpha");
+        for stray in ["notes.md", "scratch.json", "output.txt", "no-extension"] {
+            fs::write(dir.join(stray), b"not a session").expect("write");
+        }
+        fs::create_dir_all(dir.join("subdir.jsonl")).expect("a directory that looks like one");
+
+        let adapter = ClaudeCode::rooted_at(home.path());
+        let found = adapter.discover().expect("discover");
+        assert_eq!(found.len(), 1, "found {found:?}");
+        assert_eq!(found[0].provider_session_id, "real-session");
+    }
+
+    #[test]
+    fn stray_files_directly_under_projects_are_ignored() {
+        let home = claude_home();
+        let projects = home.path().join(PROJECTS_SUBDIRECTORY);
+        fs::create_dir_all(&projects).expect("mkdir");
+        fs::write(projects.join("stray.jsonl"), b"not in a project").expect("write");
+        session_file(home.path(), "-Users-me-alpha", "real", "{}\n");
+
+        let adapter = ClaudeCode::rooted_at(home.path());
+        let found = adapter.discover().expect("discover");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].provider_session_id, "real");
+    }
+
+    #[test]
+    fn the_project_path_is_decoded_from_the_directory_name() {
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-Documents-Work", "abc", "{}\n");
+
+        let adapter = ClaudeCode::rooted_at(home.path());
+        let found = adapter.discover().expect("discover");
+        assert_eq!(
+            found[0].project,
+            Some(PathBuf::from("/Users/me/Documents/Work"))
+        );
+    }
+
+    #[test]
+    fn a_directory_name_that_is_not_a_slug_yields_no_project() {
+        let home = claude_home();
+        session_file(home.path(), "not-a-slug", "abc", "{}\n");
+        let adapter = ClaudeCode::rooted_at(home.path());
+        assert_eq!(adapter.discover().expect("discover")[0].project, None);
+    }
+
+    #[test]
+    fn discovery_reports_a_stable_order() {
+        let home = claude_home();
+        for (project, id) in [
+            ("-Users-me-beta", "zzz"),
+            ("-Users-me-alpha", "aaa"),
+            ("-Users-me-alpha", "mmm"),
+        ] {
+            session_file(home.path(), project, id, "{}\n");
+        }
+        let adapter = ClaudeCode::rooted_at(home.path());
+        let first: Vec<_> = adapter
+            .discover()
+            .expect("discover")
+            .iter()
+            .map(|d| d.provider_session_id.clone())
+            .collect();
+        let again: Vec<_> = adapter
+            .discover()
+            .expect("discover")
+            .iter()
+            .map(|d| d.provider_session_id.clone())
+            .collect();
+        assert_eq!(first, again, "two runs disagreed about ordering");
+    }
+
+    #[test]
+    fn discovery_does_not_read_session_contents() {
+        // A file that would fail any parser must still be discovered: finding
+        // it and understanding it are separate steps, and a sync needs the
+        // first to work even when the second will not.
+        let home = claude_home();
+        session_file(
+            home.path(),
+            "-Users-me-alpha",
+            "unreadable",
+            "\u{0}not json at all",
+        );
+        let adapter = ClaudeCode::rooted_at(home.path());
+        assert_eq!(adapter.discover().expect("discover").len(), 1);
+    }
+
+    /// Put a sub-agent transcript where Claude Code would put it.
+    fn subagent_file(home: &Path, project: &str, session: &str, task: &str) -> PathBuf {
+        let dir = home
+            .join(PROJECTS_SUBDIRECTORY)
+            .join(project)
+            .join(session)
+            .join(SUBAGENTS_SUBDIRECTORY);
+        fs::create_dir_all(&dir).expect("create subagents directory");
+        let path = dir.join(format!("{task}.{SESSION_EXTENSION}"));
+        fs::write(&path, "{}\n").expect("write subagent transcript");
+        path
+    }
+
+    #[test]
+    fn subagent_transcripts_belong_to_their_parent_session() {
+        // Their records carry the parent's sessionId and isSidechain: true, so
+        // they are part of that session rather than sessions of their own.
+        // Reporting them as peers would scatter one conversation across four.
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-alpha", "parent-1", "{}\n");
+        subagent_file(home.path(), "-Users-me-alpha", "parent-1", "task-a");
+        subagent_file(home.path(), "-Users-me-alpha", "parent-1", "task-b");
+
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+
+        assert_eq!(found.len(), 1, "sub-agents were reported as sessions");
+        assert_eq!(found[0].provider_session_id, "parent-1");
+        assert_eq!(found[0].additional_paths.len(), 2);
+        assert!(found[0]
+            .additional_paths
+            .iter()
+            .all(|p| p.to_string_lossy().contains(SUBAGENTS_SUBDIRECTORY)));
+    }
+
+    #[test]
+    fn a_session_without_subagents_has_none_attached() {
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-alpha", "solo", "{}\n");
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        assert!(found[0].additional_paths.is_empty());
+    }
+
+    #[test]
+    fn subagent_directories_are_not_mistaken_for_projects() {
+        // <session-uuid>/ sits inside the project directory beside the session
+        // file. It must not be walked as though it were a project of its own.
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-alpha", "parent-1", "{}\n");
+        subagent_file(home.path(), "-Users-me-alpha", "parent-1", "task-a");
+
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        let ids: Vec<_> = found.iter().map(|d| &d.provider_session_id).collect();
+        assert_eq!(ids, ["parent-1"], "found {ids:?}");
+    }
+
+    #[test]
+    fn subagent_transcripts_are_attached_in_a_stable_order() {
+        let home = claude_home();
+        session_file(home.path(), "-Users-me-alpha", "parent-1", "{}\n");
+        for task in ["zzz", "aaa", "mmm"] {
+            subagent_file(home.path(), "-Users-me-alpha", "parent-1", task);
+        }
+        let a = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        let b = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        assert_eq!(a[0].additional_paths, b[0].additional_paths);
+    }
+
+    #[test]
+    fn discovery_leaves_the_provider_directory_untouched() {
+        let home = claude_home();
+        let path = session_file(home.path(), "-Users-me-alpha", "abc", "original contents\n");
+        let before = fs::read(&path).expect("read");
+        let modified_before = fs::metadata(&path).expect("metadata").modified().ok();
+
+        ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+
+        assert_eq!(fs::read(&path).expect("read"), before);
+        assert_eq!(
+            fs::metadata(&path).expect("metadata").modified().ok(),
+            modified_before,
+            "discovery modified the provider's file"
+        );
     }
 }

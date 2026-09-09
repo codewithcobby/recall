@@ -62,6 +62,12 @@ pub struct DiscoveredSession {
     ///
     /// Recall opens this read-only and never writes near it.
     pub path: PathBuf,
+    /// Further files the provider stores separately that belong to this same
+    /// session — sub-agent transcripts, for instance.
+    ///
+    /// Discovered because leaving them out loses work that genuinely happened
+    /// during the session. They are read in order after [`Self::path`].
+    pub additional_paths: Vec<PathBuf>,
     /// The project the session appears to belong to, if the layout says.
     pub project: Option<PathBuf>,
     /// When the file was last written, if the filesystem could say.

@@ -350,6 +350,8 @@ name = "recall-adapters"
 version = "0.1.0"
 dependencies = [
  "recall-core",
+ "tempfile",
+ "time",
 ]
 
 [[package]]
