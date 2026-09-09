@@ -1,0 +1,88 @@
+name: Prune released branches
+
+# Branch cleanup happens when work reaches main, not when it reaches dev.
+#
+# GitHub's repo-wide delete_branch_on_merge cannot express that: it fires on
+# every merge regardless of target, so a feature branch disappeared as soon as it
+# landed on dev, and the release pull request deleted dev itself, because dev was
+# that PR's head branch. The setting is off; this workflow replaces it.
+on:
+  push:
+    branches: [main]
+  # For a one-off sweep, or to catch up after the workflow itself changes.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: prune-released-branches
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: delete branches whose work is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Ancestry checks need the whole history, not a shallow clone.
+          fetch-depth: 0
+
+      - name: Prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # Never delete these, whatever a pull request says.
+          protected=("main" "dev")
+
+          deleted=0
+          kept=0
+
+          # Every merged pull request, not just those based on dev: in a stack
+          # only the bottom PR targets dev, and the layers above target each
+          # other. Filtering on base would strand all of them.
+          gh pr list --state merged --limit 200 \
+            --json number,headRefName,mergeCommit \
+            --jq '.[] | select(.mergeCommit != null) | "\(.number)\t\(.headRefName)\t\(.mergeCommit.oid)"' \
+            > merged.tsv
+
+          while IFS=$'\t' read -r pr branch sha; do
+            [ -n "${branch:-}" ] || continue
+
+            skip=""
+            for p in "${protected[@]}"; do
+              [ "$branch" = "$p" ] && skip=yes
+            done
+            if [ -n "$skip" ]; then
+              echo "#$pr  $branch — protected, skipping"
+              continue
+            fi
+
+            if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              echo "#$pr  $branch — already gone"
+              continue
+            fi
+
+            # The merge commit, not the branch tip. Pull requests into dev are
+            # squash-merged, so a branch tip is never an ancestor of anything;
+            # the squash commit recorded on the pull request is, once the
+            # release reaches main.
+            if git merge-base --is-ancestor "$sha" origin/main 2>/dev/null; then
+              if git push origin --delete "$branch"; then
+                echo "#$pr  $branch — released, deleted"
+                deleted=$((deleted + 1))
+              else
+                echo "#$pr  $branch — released, but deletion failed"
+              fi
+            else
+              echo "#$pr  $branch — merged but not yet on main, keeping"
+              kept=$((kept + 1))
+            fi
+          done < merged.tsv
+
+          echo
+          echo "deleted $deleted branch(es), kept $kept awaiting release"
