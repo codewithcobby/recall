@@ -107,7 +107,12 @@ shape will silently drop the other.
 
 `tool_result.content` is string-or-array as well.
 
-`message.model` on `assistant` records is the model identifier.
+`message.model` on `assistant` records is the model identifier — except when it
+is not. Claude Code writes `<synthetic>` there for messages it generated itself
+rather than obtained from the API: interrupted turns, injected notices. That is
+a marker, not a model, and archiving it would store a value matching nothing
+that exists. Placeholders are recognised by their angle brackets, so a new one
+needs no code change.
 
 ### Extended thinking
 

@@ -53,8 +53,18 @@ pub fn normalize(
                     branch = Some(b.to_string());
                 }
             }
-            if let Some(m) = record.message.as_ref().and_then(|m| m.model.as_deref()) {
-                model = Some(m.to_string());
+            // First real model wins. Claude Code writes placeholders in this
+            // field for messages it generated itself, and a placeholder
+            // arriving after a real identifier would otherwise overwrite it.
+            if model.is_none() {
+                if let Some(m) = record
+                    .message
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref())
+                    .filter(|m| is_real_model(m))
+                {
+                    model = Some(m.to_string());
+                }
             }
 
             for event in events_from(record, at) {
@@ -309,6 +319,20 @@ fn value_as_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Whether this names a model rather than marking the absence of one.
+///
+/// Claude Code writes `<synthetic>` on messages it produced itself — an
+/// interrupted turn, an injected notice — rather than obtained from the API.
+/// Archiving that as the session's model stores something that looks like a
+/// value and matches no model that exists, which is worse than absence:
+/// listings, the index (#34) and search would all carry it.
+///
+/// The angle brackets are the tell, so treating the shape as the marker rather
+/// than one exact string handles a new placeholder without a code change.
+fn is_real_model(model: &str) -> bool {
+    !model.is_empty() && !(model.starts_with('<') && model.ends_with('>'))
+}
+
 /// Claude Code writes ISO-8601 with a `Z`.
 fn parse_timestamp(text: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(text, &Rfc3339).ok()
@@ -350,6 +374,45 @@ mod tests {
             Some("dev")
         );
         assert_eq!(s.duration().map(|d| d.whole_minutes()), Some(90));
+    }
+
+    #[test]
+    fn a_synthetic_model_placeholder_is_not_a_model() {
+        // Claude Code writes this for messages it generated itself. Archiving
+        // it would store a value matching no model that exists.
+        let s = session_from(&format!(
+            r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"<synthetic>","content":[{{"type":"text","text":"x"}}]}}}}"#
+        ));
+        assert_eq!(s.model, None);
+    }
+
+    #[test]
+    fn a_real_model_is_not_overwritten_by_a_later_placeholder() {
+        // The exact ordering that produced the bug.
+        let s = session_from(&format!(
+            r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"claude-opus-5","content":[{{"type":"text","text":"a"}}]}}}}
+{{"type":"assistant","timestamp":"{AT}","message":{{"model":"<synthetic>","content":[{{"type":"text","text":"b"}}]}}}}"#
+        ));
+        assert_eq!(s.model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn a_placeholder_before_a_real_model_does_not_win_either() {
+        let s = session_from(&format!(
+            r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"<synthetic>","content":[{{"type":"text","text":"a"}}]}}}}
+{{"type":"assistant","timestamp":"{AT}","message":{{"model":"claude-opus-5","content":[{{"type":"text","text":"b"}}]}}}}"#
+        ));
+        assert_eq!(s.model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn any_bracketed_placeholder_is_treated_as_absence() {
+        for placeholder in ["<synthetic>", "<none>", "<unknown>", ""] {
+            let s = session_from(&format!(
+                r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"{placeholder}","content":[{{"type":"text","text":"x"}}]}}}}"#
+            ));
+            assert_eq!(s.model, None, "{placeholder:?} was archived as a model");
+        }
     }
 
     #[test]
