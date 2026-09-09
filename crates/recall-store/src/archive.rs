@@ -13,7 +13,7 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use recall_core::{FormatError, Session, SessionId};
+use recall_core::{FormatError, Session, SessionHeader, SessionId};
 
 use crate::layout::{Layout, COMPRESSION_LEVEL, SESSION_EXTENSION, UNCOMPRESSED_SESSION_EXTENSION};
 
@@ -237,6 +237,74 @@ impl Archive {
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
+    }
+
+    /// Every archived session's metadata, without its transcript.
+    ///
+    /// Reads one line per archive rather than all of them. On a real archive
+    /// that is the difference between decompressing twenty-five thousand events
+    /// and decompressing one line to find out there are twenty-five thousand.
+    ///
+    /// Failures are reported per session, so one damaged archive does not hide
+    /// the rest.
+    pub fn headers(&self) -> Result<Vec<Result<SessionHeader, ArchiveError>>, ArchiveError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .map(|entry| self.read_header_at(&entry.id, &entry.path))
+            .collect())
+    }
+
+    /// Read one archive's header.
+    fn read_header_at(&self, id: &SessionId, path: &Path) -> Result<SessionHeader, ArchiveError> {
+        let file = File::open(path).map_err(|source| ArchiveError::Read {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let reader = BufReader::new(file);
+
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(SESSION_EXTENSION) => {
+                let decoder =
+                    zstd::stream::Decoder::new(reader).map_err(|source| ArchiveError::Read {
+                        id: id.clone(),
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                let failed = Rc::new(Cell::new(false));
+                let watched = WatchedReader {
+                    inner: decoder,
+                    failed: Rc::clone(&failed),
+                };
+                recall_core::read_header(BufReader::new(watched)).map_err(|source| {
+                    if failed.get() {
+                        ArchiveError::Corrupt {
+                            id: id.clone(),
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                    } else {
+                        ArchiveError::Decode {
+                            id: id.clone(),
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                    }
+                })
+            }
+            Some(UNCOMPRESSED_SESSION_EXTENSION) => {
+                recall_core::read_header(reader).map_err(|source| ArchiveError::Decode {
+                    id: id.clone(),
+                    path: path.to_path_buf(),
+                    source,
+                })
+            }
+            _ => Err(ArchiveError::UnknownEncoding {
+                id: id.clone(),
+                path: path.to_path_buf(),
+            }),
+        }
     }
 
     /// Read every archived session, reporting failures per session.

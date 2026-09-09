@@ -32,6 +32,24 @@ pub const SESSION_FORMAT_VERSION: u32 = 1;
 struct Header {
     format: u32,
     session: Session,
+    /// How many events follow.
+    ///
+    /// Written so a listing can report the size of a session without
+    /// decompressing all of it — the difference between reading one line and
+    /// reading twenty-five thousand. Optional because archives written before
+    /// it existed do not carry it, and adding an optional key is not a format
+    /// change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    events: Option<usize>,
+}
+
+/// A session's metadata, read without its events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionHeader {
+    /// Everything except the transcript.
+    pub session: Session,
+    /// How many events the session holds, when the archive records it.
+    pub event_count: Option<usize>,
 }
 
 /// Why a session could not be read or written.
@@ -107,6 +125,7 @@ pub fn write_session<W: Write>(mut out: W, session: &Session) -> Result<(), Form
         format: SESSION_FORMAT_VERSION,
         // events are `#[serde(skip)]`, so this writes metadata only.
         session: session.clone(),
+        events: Some(session.events.len()),
     };
     let line = serde_json::to_string(&header)
         .map_err(|source| FormatError::Malformed { line: 1, source })?;
@@ -126,6 +145,52 @@ pub fn write_session<W: Write>(mut out: W, session: &Session) -> Result<(), Form
         })?;
     }
     Ok(())
+}
+
+/// Read only a session's metadata.
+///
+/// Consumes one line. A listing over a large archive is the reason this exists:
+/// decompressing an entire transcript to report when it happened and how big it
+/// is wastes almost all of the work.
+pub fn read_header<R: BufRead>(input: R) -> Result<SessionHeader, FormatError> {
+    let mut lines = input.lines();
+    let first = lines.next().ok_or(FormatError::Empty)?;
+    let first = first.map_err(|source| classify(1, "reading the session header", source))?;
+    parse_header(&first)
+}
+
+/// Parse and validate a header line.
+fn parse_header(line: &str) -> Result<SessionHeader, FormatError> {
+    if line.trim().is_empty() {
+        return Err(FormatError::Empty);
+    }
+
+    let header: Header =
+        serde_json::from_str(line).map_err(|source| FormatError::Malformed { line: 1, source })?;
+    if header.format != SESSION_FORMAT_VERSION {
+        return Err(FormatError::UnsupportedVersion {
+            found: header.format,
+            supported: SESSION_FORMAT_VERSION,
+        });
+    }
+
+    // The id derives from the provider fields beside it, so they cannot
+    // disagree unless the file was edited or corrupted.
+    let expected = SessionId::derive(
+        &header.session.provider,
+        &header.session.provider_session_id,
+    );
+    if header.session.id != expected {
+        return Err(FormatError::IdMismatch {
+            stored: header.session.id,
+            expected,
+        });
+    }
+
+    Ok(SessionHeader {
+        session: header.session,
+        event_count: header.events,
+    })
 }
 
 /// Read a session written by [`write_session`].
@@ -424,6 +489,86 @@ mod tests {
 
         let err = read_session(buf.as_slice()).expect_err("must fail");
         assert!(matches!(err, FormatError::NotUtf8 { line: 2 }), "{err:?}");
+    }
+
+    #[test]
+    fn a_header_reads_without_the_transcript() {
+        let mut s = session();
+        s.events = (0..5_000)
+            .map(|i| SessionEvent::UserMessage {
+                at: None,
+                content: format!("message {i}"),
+            })
+            .collect();
+
+        let mut buf = Vec::new();
+        write_session(&mut buf, &s).expect("write");
+
+        let header = read_header(buf.as_slice()).expect("read header");
+        assert_eq!(header.session.id, s.id);
+        assert_eq!(header.session.provider, s.provider);
+        assert_eq!(header.event_count, Some(5_000));
+        // The transcript is not part of a header.
+        assert!(header.session.events.is_empty());
+    }
+
+    #[test]
+    fn a_header_only_needs_the_first_line() {
+        // The property a listing depends on: no reader should have to supply
+        // the rest of the file.
+        let mut buf = Vec::new();
+        let mut s = session();
+        s.events = vec![SessionEvent::UserMessage {
+            at: None,
+            content: "there is more after this".into(),
+        }];
+        write_session(&mut buf, &s).expect("write");
+
+        let text = String::from_utf8(buf).expect("utf8");
+        let first_line_only = text.lines().next().expect("a header");
+
+        let header = read_header(first_line_only.as_bytes()).expect("read header");
+        assert_eq!(header.event_count, Some(1));
+    }
+
+    #[test]
+    fn a_header_is_refused_on_the_same_terms_as_a_session() {
+        assert!(matches!(read_header(&b""[..]), Err(FormatError::Empty)));
+
+        let mut buf = Vec::new();
+        write_session(&mut buf, &session()).expect("write");
+        let written = String::from_utf8(buf).expect("utf8");
+
+        let unknown = written.replacen("\"format\":1", "\"format\":99", 1);
+        assert!(
+            matches!(
+                read_header(unknown.as_bytes()),
+                Err(FormatError::UnsupportedVersion { found: 99, .. })
+            ),
+            "an unknown version was accepted"
+        );
+
+        let tampered = written.replace(
+            "\"provider_session_id\":\"abc-123\"",
+            "\"provider_session_id\":\"other\"",
+        );
+        assert!(
+            matches!(
+                read_header(tampered.as_bytes()),
+                Err(FormatError::IdMismatch { .. })
+            ),
+            "a tampered id was accepted"
+        );
+    }
+
+    #[test]
+    fn an_archive_without_a_recorded_count_still_reads() {
+        // Written before the count existed. Adding an optional key is not a
+        // format change, and an old archive must not become unreadable.
+        let line = r#"{"format":1,"session":{"id":"7d5e57020a19ce9b19891dcdc613cdd4","provider":"claude-code","provider_session_id":"abc-123","model":null,"started_at":"2026-09-08T12:00:00Z","ended_at":null,"project":null,"git":null}}"#;
+        let header = read_header(line.as_bytes()).expect("read header");
+        assert_eq!(header.event_count, None);
+        assert_eq!(header.session.provider_session_id, "abc-123");
     }
 
     #[test]

@@ -59,21 +59,40 @@ fn unknown_command_is_rejected() {
 
 #[test]
 fn unimplemented_commands_do_not_exit_zero() {
-    // Exiting 0 would tell a script the work was done. Each names its issue.
-    for command in ["sessions", "search"] {
-        let args: Vec<&str> = if command == "search" {
-            vec![command, "anything"]
-        } else {
-            vec![command]
-        };
-        let out = recall(&args);
-        assert!(!out.status.success(), "`recall {command}` exited zero");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("not implemented yet"),
-            "`recall {command}` said: {stderr}"
-        );
-    }
+    // Exiting 0 would tell a script the work was done. `search` is #38.
+    let out = recall(&["search", "anything"]);
+    assert!(!out.status.success(), "`recall search` exited zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not implemented yet"),
+        "`recall search` said: {stderr}"
+    );
+}
+
+#[test]
+fn sessions_without_init_refuses_and_says_what_to_do() {
+    let project = tempfile::tempdir().expect("temp dir");
+    let out = recall_in(project.path(), &["sessions"]);
+
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("recall init"),
+        "the error did not say what to do"
+    );
+}
+
+#[test]
+fn sessions_on_an_empty_archive_says_so() {
+    let project = tempfile::tempdir().expect("temp dir");
+    assert!(recall_in(project.path(), &["init"]).status.success());
+
+    let out = recall_in(project.path(), &["sessions"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No sessions archived yet") && stdout.contains("recall sync"),
+        "said: {stdout}"
+    );
 }
 
 #[test]

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod sessions;
 mod sync;
 
 use anyhow::{Context, Result};
@@ -57,7 +58,7 @@ impl Command {
         match self {
             Command::Init => None,
             Command::Sync => None,
-            Command::Sessions => Some(28),
+            Command::Sessions => None,
             Command::Show { .. } => Some(29),
             Command::Search { .. } => Some(38),
         }
@@ -93,6 +94,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Init => run_init(),
         Command::Sync => run_sync(),
+        Command::Sessions => run_sessions(),
         // Every other command returned above.
         _ => unreachable!("handled by the tracking-issue branch"),
     };
@@ -105,6 +107,13 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// `recall sessions`
+fn run_sessions() -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    sessions::list(&project_root)
 }
 
 /// `recall sync`
