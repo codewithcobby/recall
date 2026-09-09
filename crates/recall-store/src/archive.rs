@@ -86,6 +86,10 @@ pub enum ArchiveError {
         source: io::Error,
     },
 
+    /// Something is at the archive's path, but it is not a file.
+    #[error("the archive path for session {id} at {} is not a file", .path.display())]
+    NotAFile { id: SessionId, path: PathBuf },
+
     /// Recall does not know how to decode this file.
     #[error("the archive for session {id} at {} has an unrecognised extension", .path.display())]
     UnknownEncoding { id: SessionId, path: PathBuf },
@@ -184,6 +188,55 @@ impl Archive {
         Ok(Stored::Written(destination))
     }
 
+    /// One archive found in the tree.
+    #[allow(clippy::doc_markdown)]
+    pub fn entries(&self) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+        let mut entries = Vec::new();
+        for day in self.day_directories()? {
+            let listing = match fs::read_dir(&day) {
+                Ok(listing) => listing,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(ArchiveError::Search { path: day, source }),
+            };
+            for entry in listing {
+                let entry = entry.map_err(|source| ArchiveError::Search {
+                    path: day.clone(),
+                    source,
+                })?;
+                let path = entry.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                // A stray file cannot be mistaken for a session: the stem has
+                // to be a well-formed id and the extension one we recognise.
+                let Some(id) = SessionId::parse(stem) else {
+                    continue;
+                };
+                match path.extension().and_then(|e| e.to_str()) {
+                    Some(SESSION_EXTENSION) | Some(COMPRESSED_SESSION_EXTENSION) => {
+                        entries.push(ArchiveEntry { id, path })
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(entries)
+    }
+
+    /// Read every archived session, reporting failures per session.
+    ///
+    /// One damaged archive must not stop a caller reading the rest — the
+    /// archive may be the only copy of the others. Each result carries the id
+    /// of the session it belongs to, so a failure can be reported usefully.
+    pub fn read_all(&self) -> Result<Vec<Result<Session, ArchiveError>>, ArchiveError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .map(|entry| self.read_at(&entry.id, &entry.path))
+            .collect())
+    }
+
     /// Find the archive for a session id.
     ///
     /// The id does not encode the date, so this walks the day directories and
@@ -195,8 +248,18 @@ impl Archive {
             let name = format!("{id}.{extension}");
             for day in self.day_directories()? {
                 let candidate = day.join(&name);
-                if candidate.is_file() {
-                    return Ok(Some(candidate));
+                match fs::symlink_metadata(&candidate) {
+                    Ok(meta) if meta.is_file() => return Ok(Some(candidate)),
+                    // Something is there but it is not a file. Saying "not
+                    // found" would be a lie, and the difference matters when
+                    // someone is trying to work out what happened to a session.
+                    Ok(_) => {
+                        return Err(ArchiveError::NotAFile {
+                            id: id.clone(),
+                            path: candidate,
+                        })
+                    }
+                    Err(_) => continue,
                 }
             }
         }
@@ -292,6 +355,15 @@ impl Archive {
 
         Ok(staged)
     }
+}
+
+/// An archive found in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveEntry {
+    /// The session this archive holds.
+    pub id: SessionId,
+    /// Where it is.
+    pub path: PathBuf,
 }
 
 /// Subdirectories of `dir`, sorted, or an empty list if `dir` does not exist.
@@ -691,6 +763,250 @@ mod tests {
             let mode = fs::metadata(d).expect("metadata").permissions().mode() & 0o777;
             assert_eq!(mode, 0o700, "{} is {mode:o}, expected 700", d.display());
             dir = d.parent();
+        }
+    }
+}
+
+/// Every way an archive can be broken, and what Recall does about it.
+///
+/// The rule these all share: an error naming the session, never a panic, and
+/// never a partial or empty session handed back as though it were real.
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+    use recall_core::{Provider, SessionEvent};
+    use time::macros::datetime;
+
+    fn project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        crate::init(dir.path()).expect("init");
+        dir
+    }
+
+    fn session(id: &str) -> Session {
+        let mut s = Session::new(
+            Provider::new("claude-code").expect("provider"),
+            id,
+            datetime!(2026-09-08 12:00:00 UTC),
+        );
+        s.events = vec![SessionEvent::UserMessage {
+            at: None,
+            content: format!("session {id}"),
+        }];
+        s
+    }
+
+    /// Archive a session and hand back its path, ready to be damaged.
+    fn archived(archive: &Archive, id: &str) -> (Session, PathBuf) {
+        let s = session(id);
+        let stored = archive.write(&s).expect("write");
+        (s, stored.path().to_path_buf())
+    }
+
+    #[test]
+    fn a_missing_archive_is_reported_as_missing() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        fs::remove_file(&path).expect("remove");
+
+        assert!(matches!(
+            archive.read(&s.id),
+            Err(ArchiveError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn a_truncated_archive_is_refused() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+
+        let bytes = fs::read(&path).expect("read");
+        fs::write(&path, &bytes[..bytes.len() / 2]).expect("truncate");
+
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a decode error naming the session, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_archive_file_is_not_an_empty_session() {
+        // The failure mode SECURITY.md calls out by name.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        fs::write(&path, b"").expect("empty it");
+
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            Ok(session) => panic!(
+                "an empty file was read as a session with {} events",
+                session.event_count()
+            ),
+            other => panic!("expected a decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn garbage_bytes_are_refused() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        fs::write(&path, [0xff, 0x00, 0xfe, 0x42, 0x00, 0x99]).expect("garbage");
+
+        assert!(matches!(
+            archive.read(&s.id),
+            Err(ArchiveError::Decode { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_format_version_is_refused() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+
+        let text = fs::read_to_string(&path).expect("read");
+        fs::write(&path, text.replacen("\"format\":1", "\"format\":99", 1)).expect("write");
+
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_directory_where_the_archive_belongs_is_reported_as_such() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        fs::remove_file(&path).expect("remove");
+        fs::create_dir(&path).expect("directory in its place");
+
+        match archive.read(&s.id) {
+            Err(ArchiveError::NotAFile { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a not-a-file error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_archive_recall_cannot_decode_yet_is_reported_not_guessed() {
+        // A .zst archive written by a future build. Decoding arrives in #17;
+        // until then it must be named as an unreadable encoding rather than
+        // parsed as JSON Lines.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        let compressed = path.with_extension("zst");
+        fs::rename(&path, &compressed).expect("rename");
+
+        match archive.read(&s.id) {
+            Err(ArchiveError::UnknownEncoding { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected an unknown-encoding error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_archive_is_reported_rather_than_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        // Root ignores permission bits, so the test would prove nothing there.
+        // Detect that by trying, rather than by asking who we are.
+        if File::open(&path).is_ok() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("restore");
+            return;
+        }
+
+        let result = archive.read(&s.id);
+        // Restore before asserting, so a failure does not leave an
+        // undeletable temp directory behind.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("restore");
+
+        match result {
+            Err(ArchiveError::Read { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a read error naming the session, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_damaged_archive_does_not_hide_the_others() {
+        // The whole point: the archive may be the only copy of the sessions
+        // that are still fine.
+        let p = project();
+        let archive = Archive::open(p.path());
+
+        let (good_one, _) = archived(&archive, "one");
+        let (broken, broken_path) = archived(&archive, "two");
+        let (good_two, _) = archived(&archive, "three");
+        fs::write(&broken_path, b"{not json at all").expect("damage");
+
+        let results = archive.read_all().expect("enumerate");
+        assert_eq!(results.len(), 3, "an archive went missing from the listing");
+
+        let recovered: Vec<_> = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|s| s.id.clone())
+            .collect();
+        assert!(recovered.contains(&good_one.id));
+        assert!(recovered.contains(&good_two.id));
+        assert!(!recovered.contains(&broken.id));
+
+        let failures: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+        assert_eq!(failures.len(), 1);
+        assert!(
+            format!("{}", failures[0]).contains(broken.id.as_str()),
+            "the failure did not name the session: {}",
+            failures[0]
+        );
+    }
+
+    #[test]
+    fn stray_files_in_the_archive_are_not_mistaken_for_sessions() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let (s, path) = archived(&archive, "abc");
+        let day = path.parent().expect("day directory");
+
+        fs::write(day.join("notes.md"), b"mine").expect("write");
+        fs::write(day.join("not-an-id.jsonl"), b"{}").expect("write");
+        fs::write(day.join(format!("{}.bak", s.id)), b"{}").expect("write");
+
+        let entries = archive.entries().expect("entries");
+        assert_eq!(entries.len(), 1, "found {entries:?}");
+        assert_eq!(entries[0].id, s.id);
+    }
+
+    #[test]
+    fn nothing_here_panics() {
+        // Every damaged shape in one pass, asserting only that each returns
+        // rather than unwinding.
+        let p = project();
+        let archive = Archive::open(p.path());
+        for (i, damage) in [
+            b"".to_vec(),
+            b"\x00\x01\x02".to_vec(),
+            b"{".to_vec(),
+            b"[]".to_vec(),
+            b"null".to_vec(),
+            "\u{feff}{}".as_bytes().to_vec(),
+            b"{\"format\":1}".to_vec(),
+            vec![b'x'; 1_000_000],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (s, path) = archived(&archive, &format!("case-{i}"));
+            fs::write(&path, &damage).expect("damage");
+            let _ = archive.read(&s.id);
         }
     }
 }
