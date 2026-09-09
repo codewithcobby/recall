@@ -1,0 +1,56 @@
+name: CI
+
+# CONTRIBUTING requires fmt, clippy and the workspace tests to pass before a
+# pull request is reviewed. This runs all three so that does not depend on the
+# author remembering.
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+# A new push supersedes the run already in flight for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain action: rustup honours rust-toolchain.toml on the first
+      # cargo invocation, which installs the pinned channel along with the
+      # rustfmt and clippy components it names. Keeping the version in one
+      # place means CI cannot drift from what contributors run locally.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - name: Cache cargo registry and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
