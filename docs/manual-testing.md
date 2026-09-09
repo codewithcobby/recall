@@ -359,13 +359,27 @@ Anything but `true` is data loss.
 ### 6. Damaged archives
 
 ```text
-  truncated        refused: … is not readable as a session  (line 3 is not a valid session record)
-  emptied          refused: … is not readable as a session  (session file is empty)
-  garbage bytes    refused: … is not readable as a session  (line 1 is not valid UTF-8, …)
-  future version   refused: … is not readable as a session  (session format version 99 is not supported …)
+  truncated frame  refused: … is corrupt
+                     <- incomplete frame
+  garbage bytes    refused: … is corrupt
+                     <- Unknown frame descriptor
+  one flipped bit  refused: … is corrupt
+                     <- Restored data doesn't match checksum
+  future version   refused: … is not readable as a session
+                     <- session format version 99 is not supported (this build reads 1)
   missing          refused: no archived session with id 7d5e5702…
   a directory      refused: … is not a file
 ```
+
+Read the chain, not just the first line. The bottom of it is the useful part:
+`Restored data doesn't match checksum` is the Zstandard frame checksum catching
+a single flipped bit, which is the whole reason checksums are enabled.
+
+Notice the two categories. **"is corrupt"** means the bytes on disk are damaged.
+**"is not readable as a session"** means the archive is intact and what it
+contains is something this build cannot read — a session from a newer Recall,
+say. Conflating them would send someone to check their disk over a version
+mismatch.
 
 **Every line must say `refused`.** An `ACCEPTED` anywhere is a serious bug.
 

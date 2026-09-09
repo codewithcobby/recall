@@ -181,12 +181,18 @@ fn report(what: &str, result: Result<Session, ArchiveError>, project: &Path) {
             session.event_count()
         ),
         Err(e) => {
-            let cause = std::error::Error::source(&e)
-                .map(|c| format!("  ({c})"))
-                .unwrap_or_default();
+            // The whole chain, because the useful detail is at the bottom: the
+            // top says which session, the middle says what kind of problem, the
+            // bottom says what actually went wrong.
+            let mut chain = vec![tidy(&e.to_string(), project)];
+            let mut cause: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+            while let Some(c) = cause {
+                chain.push(tidy(&c.to_string(), project));
+                cause = c.source();
+            }
             println!(
-                "  {what:<16} refused: {}{cause}",
-                tidy(&e.to_string(), project)
+                "  {what:<16} refused: {}",
+                chain.join("\n                     <- ")
             );
         }
     }

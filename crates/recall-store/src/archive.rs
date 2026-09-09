@@ -7,9 +7,11 @@
 //!
 //! Reading lands in #14; the failure modes in #15.
 
+use std::cell::Cell;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use recall_core::{FormatError, Session, SessionId};
 
@@ -84,6 +86,19 @@ pub enum ArchiveError {
         path: PathBuf,
         #[source]
         source: io::Error,
+    },
+
+    /// The archive did not decompress.
+    ///
+    /// Told apart from an i/o failure deliberately: this means the bytes on
+    /// disk are damaged, not that the disk misbehaved, and sending someone to
+    /// check their hardware over a corrupt file wastes their time.
+    #[error("the archive for session {id} at {} is corrupt", .path.display())]
+    Corrupt {
+        id: SessionId,
+        path: PathBuf,
+        #[source]
+        source: FormatError,
     },
 
     /// Something is at the archive's path, but it is not a file.
@@ -287,7 +302,7 @@ impl Archive {
         })?;
         let reader = BufReader::new(file);
 
-        let decoded = match path.extension().and_then(|e| e.to_str()) {
+        match path.extension().and_then(|e| e.to_str()) {
             // Streamed, so memory scales with the largest event rather than
             // with the session.
             Some(SESSION_EXTENSION) => {
@@ -297,22 +312,45 @@ impl Archive {
                         path: path.to_path_buf(),
                         source,
                     })?;
-                recall_core::read_session(BufReader::new(decoder))
-            }
-            Some(UNCOMPRESSED_SESSION_EXTENSION) => recall_core::read_session(reader),
-            _ => {
-                return Err(ArchiveError::UnknownEncoding {
-                    id: id.clone(),
-                    path: path.to_path_buf(),
+
+                // Watch whether the failure came out of the decompressor, so a
+                // damaged frame is reported as damage rather than as an i/o
+                // error. Matching on zstd's message text would be fragile;
+                // noticing where the error came from is not.
+                let decompression_failed = Rc::new(Cell::new(false));
+                let watched = WatchedReader {
+                    inner: decoder,
+                    failed: Rc::clone(&decompression_failed),
+                };
+
+                recall_core::read_session(BufReader::new(watched)).map_err(|source| {
+                    if decompression_failed.get() {
+                        ArchiveError::Corrupt {
+                            id: id.clone(),
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                    } else {
+                        ArchiveError::Decode {
+                            id: id.clone(),
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                    }
                 })
             }
-        };
-
-        decoded.map_err(|source| ArchiveError::Decode {
-            id: id.clone(),
-            path: path.to_path_buf(),
-            source,
-        })
+            Some(UNCOMPRESSED_SESSION_EXTENSION) => {
+                recall_core::read_session(reader).map_err(|source| ArchiveError::Decode {
+                    id: id.clone(),
+                    path: path.to_path_buf(),
+                    source,
+                })
+            }
+            _ => Err(ArchiveError::UnknownEncoding {
+                id: id.clone(),
+                path: path.to_path_buf(),
+            }),
+        }
     }
 
     /// Every `YYYY/MM/DD` directory holding archives, in order.
@@ -397,6 +435,21 @@ impl Archive {
         })?;
 
         Ok(staged)
+    }
+}
+
+/// A reader that remembers whether the thing underneath it failed.
+///
+/// Used to tell "this archive is damaged" apart from "the disk failed", which
+/// look identical by the time an error reaches the caller.
+struct WatchedReader<R> {
+    inner: R,
+    failed: Rc<Cell<bool>>,
+}
+
+impl<R: Read> Read for WatchedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf).inspect_err(|_| self.failed.set(true))
     }
 }
 
@@ -815,12 +868,12 @@ mod tests {
         fs::write(stored.path(), &bytes).expect("corrupt");
 
         match archive.read(&s.id) {
-            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            Err(ArchiveError::Corrupt { id, .. }) => assert_eq!(id, s.id),
             Ok(recovered) => panic!(
                 "a corrupted archive was accepted as a session with {} events",
                 recovered.event_count()
             ),
-            other => panic!("expected a decode error, got {other:?}"),
+            other => panic!("expected a corruption error, got {other:?}"),
         }
     }
 
@@ -942,8 +995,8 @@ mod damage_tests {
         fs::write(&path, &bytes[..bytes.len() / 2]).expect("truncate");
 
         match archive.read(&s.id) {
-            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
-            other => panic!("expected a decode error naming the session, got {other:?}"),
+            Err(ArchiveError::Corrupt { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a corruption error naming the session, got {other:?}"),
         }
     }
 
@@ -956,12 +1009,12 @@ mod damage_tests {
         fs::write(&path, b"").expect("empty it");
 
         match archive.read(&s.id) {
-            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            Err(ArchiveError::Corrupt { id, .. }) => assert_eq!(id, s.id),
             Ok(session) => panic!(
                 "an empty file was read as a session with {} events",
                 session.event_count()
             ),
-            other => panic!("expected a decode error, got {other:?}"),
+            other => panic!("expected a corruption error, got {other:?}"),
         }
     }
 
@@ -974,7 +1027,7 @@ mod damage_tests {
 
         assert!(matches!(
             archive.read(&s.id),
-            Err(ArchiveError::Decode { .. })
+            Err(ArchiveError::Corrupt { .. })
         ));
     }
 
@@ -1133,6 +1186,205 @@ mod damage_tests {
             let (s, path) = archived(&archive, &format!("case-{i}"));
             fs::write(&path, &damage).expect("damage");
             let _ = archive.read(&s.id);
+        }
+    }
+}
+
+/// Corruption at the compression layer, and the line between "this archive is
+/// damaged" and "this archive is intact but says something we cannot read".
+///
+/// The rule: every case is detected, none is silently accepted, and none comes
+/// back as an empty or partial session.
+#[cfg(test)]
+mod corruption_tests {
+    use super::*;
+    use recall_core::{Provider, SessionEvent};
+    use time::macros::datetime;
+
+    fn project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        crate::init(dir.path()).expect("init");
+        dir
+    }
+
+    /// A session with enough content that a truncation lands mid-stream.
+    fn session(id: &str) -> Session {
+        let mut s = Session::new(
+            Provider::new("claude-code").expect("provider"),
+            id,
+            datetime!(2026-09-08 12:00:00 UTC),
+        );
+        s.events = (0..200)
+            .map(|i| SessionEvent::AssistantMessage {
+                at: None,
+                content: format!("step {i}: checking the retry path and the backoff policy"),
+            })
+            .collect();
+        s
+    }
+
+    /// Archive a session, then replace its bytes with something broken.
+    fn archived_then(
+        damage: impl FnOnce(&[u8]) -> Vec<u8>,
+    ) -> (tempfile::TempDir, Session, PathBuf) {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let s = session("abc");
+        let stored = archive.write(&s).expect("write");
+        let path = stored.path().to_path_buf();
+
+        let good = fs::read(&path).expect("read");
+        fs::write(&path, damage(&good)).expect("damage");
+        (p, s, path)
+    }
+
+    /// Read a damaged archive and insist it was refused as corrupt.
+    fn expect_corrupt(what: &str, damage: impl FnOnce(&[u8]) -> Vec<u8>) {
+        let (p, s, _) = archived_then(damage);
+        let archive = Archive::open(p.path());
+        match archive.read(&s.id) {
+            Err(ArchiveError::Corrupt { id, .. }) => assert_eq!(id, s.id, "{what}"),
+            Ok(recovered) => panic!(
+                "{what}: accepted as a session with {} events",
+                recovered.event_count()
+            ),
+            Err(other) => panic!("{what}: expected a corruption error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_truncated_frame_is_corruption() {
+        expect_corrupt("truncated at half", |good| good[..good.len() / 2].to_vec());
+    }
+
+    #[test]
+    fn a_frame_truncated_just_before_its_end_is_corruption() {
+        // The nastiest truncation: almost all the data is there, so a reader
+        // that ignored the frame terminator would return a nearly complete
+        // session and call it whole.
+        expect_corrupt("truncated by one byte", |good| {
+            good[..good.len() - 1].to_vec()
+        });
+    }
+
+    #[test]
+    fn an_empty_file_is_corruption_not_an_empty_session() {
+        expect_corrupt("emptied", |_| Vec::new());
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_frame_are_corruption() {
+        expect_corrupt("not a zstd frame", |_| {
+            b"this was never a zstd frame".to_vec()
+        });
+    }
+
+    #[test]
+    fn a_flipped_bit_anywhere_in_the_payload_is_caught() {
+        // Every byte after the frame header, one at a time. Without frame
+        // checksums many of these decompress into plausible-looking garbage.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let s = session("abc");
+        let stored = archive.write(&s).expect("write");
+        let path = stored.path().to_path_buf();
+        let good = fs::read(&path).expect("read");
+
+        let mut accepted_wrong = Vec::new();
+        for offset in (8..good.len()).step_by(7) {
+            let mut damaged = good.clone();
+            damaged[offset] ^= 0x01;
+            fs::write(&path, &damaged).expect("damage");
+
+            match archive.read(&s.id) {
+                Err(_) => {}
+                Ok(recovered) if recovered == s => {} // the bit was in slack space
+                Ok(_) => accepted_wrong.push(offset),
+            }
+        }
+        assert!(
+            accepted_wrong.is_empty(),
+            "corruption at these offsets produced a different session that was accepted: {accepted_wrong:?}"
+        );
+    }
+
+    #[test]
+    fn a_valid_frame_holding_nonsense_is_a_decode_error_not_corruption() {
+        // The archive is intact; what it contains is not a session. Reporting
+        // that as corruption would send someone looking at their disk.
+        let (p, s, path) = archived_then(|_| zstd::encode_all(&b"{not a session"[..], 1).unwrap());
+        let _ = &path;
+        let archive = Archive::open(p.path());
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_valid_frame_holding_nothing_is_refused() {
+        let (p, s, _) = archived_then(|_| zstd::encode_all(&b""[..], 1).unwrap());
+        let archive = Archive::open(p.path());
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            Ok(recovered) => panic!(
+                "an empty archive was read as a session with {} events",
+                recovered.event_count()
+            ),
+            other => panic!("expected a decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_valid_frame_holding_a_future_session_format_is_refused() {
+        let (p, s, _) = archived_then(|good| {
+            let plain = zstd::decode_all(good).expect("decompress");
+            let patched = String::from_utf8(plain).expect("utf8").replacen(
+                "\"format\":1",
+                "\"format\":99",
+                1,
+            );
+            zstd::encode_all(patched.as_bytes(), 1).expect("recompress")
+        });
+        let archive = Archive::open(p.path());
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            other => panic!("expected a decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_valid_frame_holding_bytes_that_are_not_text_is_refused() {
+        let (p, s, _) = archived_then(|_| {
+            zstd::encode_all(&[0xff, 0x00, 0xfe, 0x42][..], 1).expect("compress")
+        });
+        let archive = Archive::open(p.path());
+        assert!(matches!(
+            archive.read(&s.id),
+            Err(ArchiveError::Decode { .. })
+        ));
+    }
+
+    #[test]
+    fn no_amount_of_damage_produces_a_partial_session() {
+        // Truncate at every 64th byte. A session is either returned whole and
+        // identical, or refused. Never a shortened transcript presented as the
+        // real one.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let s = session("abc");
+        let stored = archive.write(&s).expect("write");
+        let path = stored.path().to_path_buf();
+        let good = fs::read(&path).expect("read");
+
+        for cut in (0..good.len()).step_by(64) {
+            fs::write(&path, &good[..cut]).expect("truncate");
+            if let Ok(recovered) = archive.read(&s.id) {
+                assert_eq!(
+                    recovered, s,
+                    "a truncation at {cut} produced a different session"
+                );
+            }
         }
     }
 }
