@@ -49,6 +49,14 @@ pub enum FormatError {
     #[error("session file is empty")]
     Empty,
 
+    /// The bytes are not text.
+    ///
+    /// Distinguished from an i/o failure because it means something entirely
+    /// different: the file was read fine, it just is not a session. Reporting
+    /// it as "i/o error" sends whoever is diagnosing it looking at the disk.
+    #[error("line {line} is not valid UTF-8, so this is not a session file")]
+    NotUtf8 { line: usize },
+
     /// A line was not valid JSON, or did not match the shape expected.
     ///
     /// The line number is 1-based and counts the header, so it points at the
@@ -79,6 +87,15 @@ pub enum FormatError {
         stored: SessionId,
         expected: SessionId,
     },
+}
+
+/// Tell "these bytes are not text" apart from "the disk failed".
+fn classify(line: usize, doing: &'static str, source: std::io::Error) -> FormatError {
+    if source.kind() == std::io::ErrorKind::InvalidData {
+        FormatError::NotUtf8 { line }
+    } else {
+        FormatError::Io { doing, source }
+    }
 }
 
 /// Write a session as JSON Lines.
@@ -118,10 +135,7 @@ pub fn read_session<R: BufRead>(input: R) -> Result<Session, FormatError> {
     let mut lines = input.lines().enumerate();
 
     let (_, first) = lines.next().ok_or(FormatError::Empty)?;
-    let first = first.map_err(|source| FormatError::Io {
-        doing: "reading the session header",
-        source,
-    })?;
+    let first = first.map_err(|source| classify(1, "reading the session header", source))?;
     if first.trim().is_empty() {
         return Err(FormatError::Empty);
     }
@@ -148,10 +162,7 @@ pub fn read_session<R: BufRead>(input: R) -> Result<Session, FormatError> {
     }
 
     for (i, line) in lines {
-        let line = line.map_err(|source| FormatError::Io {
-            doing: "reading a session event",
-            source,
-        })?;
+        let line = line.map_err(|source| classify(i + 1, "reading a session event", source))?;
         // A trailing newline at end of file is normal, not an error.
         if line.trim().is_empty() {
             continue;
@@ -391,6 +402,28 @@ mod tests {
             matches!(err, FormatError::Malformed { line: 2, .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_say_so() {
+        // Reporting this as an i/o error would send whoever is diagnosing it
+        // looking at the disk, when the file is simply not a session.
+        let err = read_session(&[0xff, 0x00, 0xfe, 0x42][..]).expect_err("must fail");
+        assert!(matches!(err, FormatError::NotUtf8 { line: 1 }), "{err:?}");
+        assert!(
+            !format!("{err}").contains("i/o"),
+            "still described as an i/o error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_in_an_event_names_its_line() {
+        let mut buf = Vec::new();
+        write_session(&mut buf, &session()).expect("write");
+        buf.extend_from_slice(&[0xff, 0xfe, b'\n']);
+
+        let err = read_session(buf.as_slice()).expect_err("must fail");
+        assert!(matches!(err, FormatError::NotUtf8 { line: 2 }), "{err:?}");
     }
 
     #[test]

@@ -61,6 +61,18 @@ impl SessionId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Recover an id from text, such as an archive's filename.
+    ///
+    /// Returns `None` for anything that is not a well-formed id, so a stray
+    /// file in the archive cannot be mistaken for a session.
+    pub fn parse(text: &str) -> Option<Self> {
+        let looks_right = text.len() == ID_BYTES * 2
+            && text
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+        looks_right.then(|| Self(text.to_string()))
+    }
 }
 
 impl fmt::Display for SessionId {

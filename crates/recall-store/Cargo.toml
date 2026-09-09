@@ -13,10 +13,12 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-recall-core = { path = "../recall-core" }
+recall-core = { version = "0.1.0", path = "../recall-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
 toml = "1.1.5"
 
 [dev-dependencies]
+recall-core = { path = "../recall-core" }
 tempfile = "3.27.0"
+time = { version = "0.3.45", features = ["macros"] }
