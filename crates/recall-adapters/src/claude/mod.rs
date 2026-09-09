@@ -16,6 +16,9 @@
 //!
 //! Discovery lands in #20, parsing in #21, normalization in #22.
 
+pub mod parse;
+pub mod record;
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

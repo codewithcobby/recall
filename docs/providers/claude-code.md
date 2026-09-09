@@ -116,6 +116,17 @@ which only records what was requested.
 | `filePath`, `structuredPatch`, `originalFile`, `userModified` | 5,077 | a file was edited |
 | `oldString`, `newString`, `replaceAll` | 3,606 | a string replacement |
 
+**It is not always an object.** When a tool fails or the user rejects it, Claude
+Code writes a bare string here instead — `"User rejected tool use"`, or the
+tool's error text. That accounted for **1,061 records** in the sample, every one
+of them a `user` record carrying real conversation.
+
+This is worth stating plainly because it is the kind of thing fixtures never
+catch: a parser that types `toolUseResult` as an object parses every synthetic
+example perfectly and silently drops one record in every 180 of the real
+archive. It was found by parsing an actual installation and noticing the count
+did not match.
+
 ## What the adapter can and cannot supply
 
 | Recall field | From | Available |
