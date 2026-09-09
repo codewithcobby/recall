@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use recall_core::{FormatError, Session, SessionId};
 
-use crate::layout::{Layout, COMPRESSED_SESSION_EXTENSION, SESSION_EXTENSION};
+use crate::layout::{Layout, COMPRESSION_LEVEL, SESSION_EXTENSION, UNCOMPRESSED_SESSION_EXTENSION};
 
 /// Why an archive operation could not complete.
 #[derive(Debug, thiserror::Error)]
@@ -213,7 +213,7 @@ impl Archive {
                     continue;
                 };
                 match path.extension().and_then(|e| e.to_str()) {
-                    Some(SESSION_EXTENSION) | Some(COMPRESSED_SESSION_EXTENSION) => {
+                    Some(SESSION_EXTENSION | UNCOMPRESSED_SESSION_EXTENSION) => {
                         entries.push(ArchiveEntry { id, path })
                     }
                     _ => continue,
@@ -244,7 +244,7 @@ impl Archive {
     /// file contents, so the cost is the number of day directories rather than
     /// the number of sessions. #36 replaces this with an index lookup.
     pub fn locate(&self, id: &SessionId) -> Result<Option<PathBuf>, ArchiveError> {
-        for extension in [SESSION_EXTENSION, COMPRESSED_SESSION_EXTENSION] {
+        for extension in [SESSION_EXTENSION, UNCOMPRESSED_SESSION_EXTENSION] {
             let name = format!("{id}.{extension}");
             for day in self.day_directories()? {
                 let candidate = day.join(&name);
@@ -275,25 +275,40 @@ impl Archive {
     }
 
     /// Read a session from a known path.
+    ///
+    /// The extension decides how to decode. Feeding compressed bytes to the
+    /// JSON Lines reader would blame the session's contents for what is really
+    /// an encoding mismatch.
     fn read_at(&self, id: &SessionId, path: &Path) -> Result<Session, ArchiveError> {
-        match path.extension().and_then(|e| e.to_str()) {
-            Some(SESSION_EXTENSION) => {}
-            // Decoding these arrives with compression in #17.
+        let file = File::open(path).map_err(|source| ArchiveError::Read {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let reader = BufReader::new(file);
+
+        let decoded = match path.extension().and_then(|e| e.to_str()) {
+            // Streamed, so memory scales with the largest event rather than
+            // with the session.
+            Some(SESSION_EXTENSION) => {
+                let decoder =
+                    zstd::stream::Decoder::new(reader).map_err(|source| ArchiveError::Read {
+                        id: id.clone(),
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                recall_core::read_session(BufReader::new(decoder))
+            }
+            Some(UNCOMPRESSED_SESSION_EXTENSION) => recall_core::read_session(reader),
             _ => {
                 return Err(ArchiveError::UnknownEncoding {
                     id: id.clone(),
                     path: path.to_path_buf(),
                 })
             }
-        }
+        };
 
-        let file = File::open(path).map_err(|source| ArchiveError::Read {
-            id: id.clone(),
-            path: path.to_path_buf(),
-            source,
-        })?;
-
-        recall_core::read_session(BufReader::new(file)).map_err(|source| ArchiveError::Decode {
+        decoded.map_err(|source| ArchiveError::Decode {
             id: id.clone(),
             path: path.to_path_buf(),
             source,
@@ -330,12 +345,40 @@ impl Archive {
         })?;
         restrict_file_to_owner(&file, &staged)?;
 
-        let mut writer = BufWriter::new(file);
-        recall_core::write_session(&mut writer, session).map_err(|source| {
+        // Compression streams: the session is encoded an event at a time and
+        // compressed as it goes, so neither step holds a whole transcript in
+        // memory.
+        let mut encoder = zstd::stream::Encoder::new(BufWriter::new(file), COMPRESSION_LEVEL)
+            .map_err(|source| ArchiveError::Write {
+                path: staged.clone(),
+                source,
+            })?;
+
+        // Zstandard does not checksum frames unless asked, and without it a
+        // flipped bit decompresses into whatever the corrupted bytes happen to
+        // mean. That is the silent corruption SECURITY.md exists to prevent:
+        // the damage would only surface if it happened to break the JSON, and
+        // could otherwise be handed back as a valid session that is not the one
+        // that was archived. Four bytes per archive is a cheap guarantee.
+        encoder
+            .include_checksum(true)
+            .map_err(|source| ArchiveError::Write {
+                path: staged.clone(),
+                source,
+            })?;
+        recall_core::write_session(&mut encoder, session).map_err(|source| {
             ArchiveError::Encode {
                 id: session.id.clone(),
                 source,
             }
+        })?;
+
+        // finish() writes the frame terminator. Without it the archive
+        // decompresses as truncated - exactly the corruption this design
+        // exists to make impossible.
+        let mut writer = encoder.finish().map_err(|source| ArchiveError::Write {
+            path: staged.clone(),
+            source,
         })?;
         writer.flush().map_err(|source| ArchiveError::Write {
             path: staged.clone(),
@@ -484,7 +527,7 @@ mod tests {
         let expected = p
             .path()
             .join(".recall/sessions/2026/09/08")
-            .join(format!("{}.jsonl", s.id));
+            .join(format!("{}.zst", s.id));
         assert_eq!(stored.path(), expected);
         assert!(expected.is_file());
     }
@@ -494,11 +537,8 @@ mod tests {
         let p = project();
         let archive = Archive::open(p.path());
         let s = session("abc");
-        let stored = archive.write(&s).expect("write");
-
-        let text = fs::read_to_string(stored.path()).expect("read");
-        let back = recall_core::read_session(text.as_bytes()).expect("decode");
-        assert_eq!(back, s);
+        archive.write(&s).expect("write");
+        assert_eq!(archive.read(&s.id).expect("read"), s);
     }
 
     #[test]
@@ -588,10 +628,17 @@ mod tests {
             .collect();
 
         let stored = archive.write(&s).expect("write");
-        let text = fs::read_to_string(stored.path()).expect("read");
-        assert_eq!(
-            recall_core::read_session(text.as_bytes()).expect("decode"),
-            s
+        assert_eq!(archive.read(&s.id).expect("read"), s);
+
+        // And it is genuinely compressed: this session is highly repetitive,
+        // so the archive should be a small fraction of the encoded size.
+        let mut raw = Vec::new();
+        recall_core::write_session(&mut raw, &s).expect("encode");
+        let on_disk = fs::metadata(stored.path()).expect("metadata").len() as usize;
+        assert!(
+            on_disk * 4 < raw.len(),
+            "archive is {on_disk} bytes for {} encoded - barely compressed",
+            raw.len()
         );
     }
 
@@ -722,7 +769,7 @@ mod tests {
             .locate(&target.id)
             .expect("locate")
             .expect("present");
-        assert!(found.ends_with(format!("{}.jsonl", target.id)));
+        assert!(found.ends_with(format!("{}.zst", target.id)));
     }
 
     #[test]
@@ -736,6 +783,75 @@ mod tests {
         fs::write(archive.layout().sessions().join("notes.md"), b"mine").expect("write");
         fs::create_dir_all(archive.layout().sessions().join("scratch/deep")).expect("mkdir");
 
+        assert_eq!(archive.read(&s.id).expect("read"), s);
+    }
+
+    #[test]
+    fn archives_are_zstandard_frames() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let stored = archive.write(&session("abc")).expect("write");
+
+        let bytes = fs::read(stored.path()).expect("read");
+        // The zstd magic number. If this ever changes, the extension is lying
+        // about the encoding and readers will guess wrong.
+        assert_eq!(&bytes[..4], &[0x28, 0xb5, 0x2f, 0xfd], "not a zstd frame");
+    }
+
+    #[test]
+    fn a_flipped_bit_is_caught_rather_than_decoded() {
+        // Zstandard does not checksum frames unless asked. Without that, a
+        // corrupted archive decompresses into whatever the damaged bytes happen
+        // to mean, and only surfaces if the result also breaks the JSON - which
+        // it need not. This asserts the checksum is on.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let s = session("abc");
+        let stored = archive.write(&s).expect("write");
+
+        let mut bytes = fs::read(stored.path()).expect("read");
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0x01;
+        fs::write(stored.path(), &bytes).expect("corrupt");
+
+        match archive.read(&s.id) {
+            Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
+            Ok(recovered) => panic!(
+                "a corrupted archive was accepted as a session with {} events",
+                recovered.event_count()
+            ),
+            other => panic!("expected a decode error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compression_is_worth_having() {
+        // Not a benchmark, just a floor: a transcript with the repetition real
+        // sessions have should shrink substantially.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let mut s = session("abc");
+        s.events = (0..300)
+            .map(|i| SessionEvent::AssistantMessage {
+                at: None,
+                content: format!(
+                    "Looking at the retry path in step {i}. The current implementation \
+                     uses a fixed delay, which means a downstream outage produces a \
+                     thundering herd rather than backing off."
+                ),
+            })
+            .collect();
+
+        let stored = archive.write(&s).expect("write");
+        let mut encoded = Vec::new();
+        recall_core::write_session(&mut encoded, &s).expect("encode");
+        let on_disk = fs::metadata(stored.path()).expect("metadata").len() as usize;
+
+        assert!(
+            on_disk * 5 < encoded.len(),
+            "{on_disk} bytes on disk for {} encoded - compression is not working",
+            encoded.len()
+        );
         assert_eq!(archive.read(&s.id).expect("read"), s);
     }
 
@@ -868,8 +984,16 @@ mod damage_tests {
         let archive = Archive::open(p.path());
         let (s, path) = archived(&archive, "abc");
 
-        let text = fs::read_to_string(&path).expect("read");
-        fs::write(&path, text.replacen("\"format\":1", "\"format\":99", 1)).expect("write");
+        let raw = zstd::decode_all(fs::File::open(&path).expect("open")).expect("decompress");
+        let patched =
+            String::from_utf8(raw)
+                .expect("utf8")
+                .replacen("\"format\":1", "\"format\":99", 1);
+        fs::write(
+            &path,
+            zstd::encode_all(patched.as_bytes(), 1).expect("recompress"),
+        )
+        .expect("write");
 
         match archive.read(&s.id) {
             Err(ArchiveError::Decode { id, .. }) => assert_eq!(id, s.id),
@@ -892,20 +1016,22 @@ mod damage_tests {
     }
 
     #[test]
-    fn an_archive_recall_cannot_decode_yet_is_reported_not_guessed() {
-        // A .zst archive written by a future build. Decoding arrives in #17;
-        // until then it must be named as an unreadable encoding rather than
-        // parsed as JSON Lines.
+    fn an_uncompressed_archive_from_an_earlier_build_still_reads() {
+        // Naming the encoding in the extension is what lets compression land
+        // without a migration. An archive written before #16 must still open.
         let p = project();
         let archive = Archive::open(p.path());
-        let (s, path) = archived(&archive, "abc");
-        let compressed = path.with_extension("zst");
-        fs::rename(&path, &compressed).expect("rename");
+        let s = session("abc");
 
-        match archive.read(&s.id) {
-            Err(ArchiveError::UnknownEncoding { id, .. }) => assert_eq!(id, s.id),
-            other => panic!("expected an unknown-encoding error, got {other:?}"),
-        }
+        // Write it the old way: plain JSON Lines under .jsonl.
+        let dir = archive.layout().session_dir(s.archive_date());
+        fs::create_dir_all(&dir).expect("create day directory");
+        let legacy = dir.join(format!("{}.jsonl", s.id));
+        let mut bytes = Vec::new();
+        recall_core::write_session(&mut bytes, &s).expect("encode");
+        fs::write(&legacy, &bytes).expect("write");
+
+        assert_eq!(archive.read(&s.id).expect("read"), s);
     }
 
     #[cfg(unix)]

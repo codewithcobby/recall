@@ -50,14 +50,30 @@ session, not the provider's.
 **The extension names the encoding**, so a reader knows how to decode a file
 before opening it:
 
-| Extension | Contents |
-|-----------|----------|
-| `.jsonl` | JSON Lines, uncompressed |
-| `.zst` | the same JSON Lines, Zstandard-compressed (#16) |
+| Extension | Contents | Written by |
+|-----------|----------|------------|
+| `.zst` | JSON Lines, Zstandard-compressed | current |
+| `.jsonl` | JSON Lines, uncompressed | before #16 |
 
-Compression arrives in #16. Until then sessions are written `.jsonl`, and
-readers accept both — which is what lets compression land without a migration
-or a format-version bump. A session is only ever stored under one of them.
+Readers accept both, which is what let compression land without a migration or
+a format-version bump. A session is only ever stored under one of them.
+
+## Compression
+
+Archives are Zstandard at **level 12**, with **frame checksums on**.
+
+Sessions are written once and read rarely, so the level favours ratio over write
+speed. Measured over a 620 KB synthetic transcript, level 12 is 14% smaller than
+the default level 3 for about 10 ms, where level 19 costs 64 times the default's
+write time for a further 10%. Higher levels also decompress *faster*, since
+there is less to read back.
+
+The checksum is not optional. Zstandard does not checksum frames unless asked,
+and without it a flipped bit decompresses into whatever the corrupted bytes
+happen to mean — surfacing only if the damage also breaks the JSON, and
+otherwise handing back a valid-looking session that is not the one archived.
+That is precisely the silent corruption this project promises not to allow, and
+it costs four bytes per archive.
 
 The provider's id goes through unchanged only if it happens to be safe, which
 cannot be assumed: provider ids may contain path separators, characters Windows

@@ -309,19 +309,20 @@ cargo run --example archive_roundtrip
 
 ```text
   session id   7d5e57020a19ce9b19891dcdc613cdd4
-  archived at  .recall/sessions/2026/09/08/7d5e57020a19ce9b19891dcdc613cdd4.jsonl
+  archived at  .recall/sessions/2026/09/08/7d5e57020a19ce9b19891dcdc613cdd4.zst
 ```
 
 The path is the whole design in one line: filed by **UTC date**, named by the
-**derived id**, and the extension names the **encoding**. Compression in #16
-changes `.jsonl` to `.zst` and nothing else about this.
+**derived id**, and the extension names the **encoding**. `.zst` is
+Zstandard-compressed JSON Lines; archives written before #16 are `.jsonl` and
+still read.
 
 ### 3. Permissions, all the way down
 
 ```text
   0700        .recall/
   0700        .recall/sessions/2026/09/08/
-  0600        .recall/sessions/2026/09/08/7d5e5702….jsonl
+  0600        .recall/sessions/2026/09/08/7d5e5702….zst
   0700        .recall/tmp/
   staging holds 0 file(s)
 ```
@@ -395,9 +396,9 @@ single damaged file must never take the rest down with it.
   file under `2026/09/08`.
 - Add a `.md` file next to an archive and re-run. It must be ignored, not
   counted as a session.
-- Rename an archive from `.jsonl` to `.zst`. It must be refused as an encoding
-  this build cannot decode — *not* parsed as JSON Lines and blamed on the
-  content.
+- Flip a single byte in the middle of an archive. It must be refused: Zstandard
+  frame checksums are enabled precisely so corruption cannot decode into
+  something that looks like a session.
 
 ### Phase 3 checklist
 
