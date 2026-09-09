@@ -320,6 +320,27 @@ impl Archive {
             .collect())
     }
 
+    /// Find the one session whose id starts with `prefix`.
+    ///
+    /// Nobody types 32 hex characters. `recall sessions` prints eight, and this
+    /// accepts that or any other unambiguous prefix.
+    ///
+    /// Returns every match when there is more than one, so a caller can say
+    /// which rather than guessing. Guessing is how the wrong conversation gets
+    /// shown.
+    pub fn resolve(&self, prefix: &str) -> Result<Vec<SessionId>, ArchiveError> {
+        let prefix = prefix.to_ascii_lowercase();
+        let mut matches: Vec<SessionId> = self
+            .entries()?
+            .into_iter()
+            .filter(|e| e.id.as_str().starts_with(&prefix))
+            .map(|e| e.id)
+            .collect();
+        matches.sort();
+        matches.dedup();
+        Ok(matches)
+    }
+
     /// Find the archive for a session id.
     ///
     /// The id does not encode the date, so this walks the day directories and

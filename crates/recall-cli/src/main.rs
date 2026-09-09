@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod sessions;
+mod show;
 mod sync;
 
 use anyhow::{Context, Result};
@@ -44,6 +45,9 @@ enum Command {
     Show {
         /// Session id, or an unambiguous prefix of one.
         session: String,
+        /// Print only the session's metadata, not its transcript.
+        #[arg(long)]
+        summary: bool,
     },
     /// Search archived sessions.
     Search {
@@ -59,7 +63,7 @@ impl Command {
             Command::Init => None,
             Command::Sync => None,
             Command::Sessions => None,
-            Command::Show { .. } => Some(29),
+            Command::Show { .. } => None,
             Command::Search { .. } => Some(38),
         }
     }
@@ -95,6 +99,7 @@ fn main() -> ExitCode {
         Command::Init => run_init(),
         Command::Sync => run_sync(),
         Command::Sessions => run_sessions(),
+        Command::Show { session, summary } => run_show(&session, summary),
         // Every other command returned above.
         _ => unreachable!("handled by the tracking-issue branch"),
     };
@@ -114,6 +119,13 @@ fn run_sessions() -> Result<()> {
     let project_root =
         std::env::current_dir().context("could not determine the current directory")?;
     sessions::list(&project_root)
+}
+
+/// `recall show`
+fn run_show(session: &str, summary: bool) -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    show::show(&project_root, session, summary)
 }
 
 /// `recall sync`
