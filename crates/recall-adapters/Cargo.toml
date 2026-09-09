@@ -13,4 +13,4 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-recall-core = { path = "../recall-core" }
+recall-core = { version = "0.1.0", path = "../recall-core" }
