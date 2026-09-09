@@ -5,5 +5,7 @@
 //! nothing about any particular AI coding agent, and it depends on none of the
 //! crates that implement its traits — see the dependency direction in
 //! `.github/CONTRIBUTING.md`.
-//!
-//! The types themselves land in #10 and #11.
+
+pub mod session;
+
+pub use session::{GitContext, Provider, ProviderError, Session, SessionId};
