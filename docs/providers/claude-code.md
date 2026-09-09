@@ -127,6 +127,26 @@ example perfectly and silently drops one record in every 180 of the real
 archive. It was found by parsing an actual installation and noticing the count
 did not match.
 
+## Attachments
+
+`attachment` records are mostly **Claude Code talking to itself**, not things a
+person or a tool produced:
+
+| attachment type | records | |
+|---|---|---|
+| `total_tokens_reminder` | 18,254 | internal |
+| `task_reminder` | 3,188 | internal |
+| `edited_text_file` | 910 | real content |
+| `queued_command` | 317 | real content |
+| `environment`, `file`, … | ~400 | real content |
+
+Reminders outnumber real attachments by more than ten to one. Archiving them
+would bury the conversation in bookkeeping, so the adapter skips a documented
+set of internal types and preserves everything else with its text.
+
+The list is a **deny-list on purpose**: an attachment type not on it is kept, so
+a new one added by a future release is preserved rather than silently lost.
+
 ## What the adapter can and cannot supply
 
 | Recall field | From | Available |

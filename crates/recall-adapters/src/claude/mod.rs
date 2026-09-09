@@ -16,6 +16,7 @@
 //!
 //! Discovery lands in #20, parsing in #21, normalization in #22.
 
+pub mod normalize;
 pub mod parse;
 pub mod record;
 
@@ -151,11 +152,27 @@ impl Adapter for ClaudeCode {
     }
 
     fn load(&self, discovered: &DiscoveredSession) -> Result<Session, AdapterError> {
-        // #21 parses, #22 normalizes.
-        Err(AdapterError::Empty {
-            provider: self.provider.clone(),
-            provider_session_id: discovered.provider_session_id.clone(),
-        })
+        let mut files = Vec::with_capacity(1 + discovered.additional_paths.len());
+        for path in std::iter::once(&discovered.path).chain(discovered.additional_paths.iter()) {
+            files.push(parse::parse_file(
+                &self.provider,
+                &discovered.provider_session_id,
+                path,
+            )?);
+        }
+
+        normalize::normalize(
+            &self.provider,
+            &discovered.provider_session_id,
+            discovered.project.clone(),
+            &files,
+        )
+    }
+
+    fn provider_version(&self, path: &Path) -> Option<String> {
+        // The version is on every content record; the first one will do.
+        let parsed = parse::parse_file(&self.provider, "", path).ok()?;
+        parsed.records.iter().find_map(|r| r.version.clone())
     }
 }
 

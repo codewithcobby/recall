@@ -59,6 +59,9 @@ pub struct Record {
     /// derivable from.
     pub tool_use_result: Option<ToolUseResult>,
 
+    /// The payload of an `attachment` record.
+    pub attachment: Option<Attachment>,
+
     /// A `system` record's sub-type.
     pub subtype: Option<String>,
 
@@ -73,6 +76,76 @@ impl Record {
             self.kind.as_deref(),
             Some("user" | "assistant" | "system" | "attachment")
         )
+    }
+}
+
+/// Something shown to the agent on an `attachment` record.
+///
+/// Most attachments are Claude Code's own injected reminders rather than
+/// anything a person or a tool produced — token-count and task reminders alone
+/// were 92% of them in the sample this was written against.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub text: Option<String>,
+    pub content: Option<serde_json::Value>,
+    pub snippet: Option<String>,
+    pub filename: Option<String>,
+    pub prompt: Option<String>,
+}
+
+impl Attachment {
+    /// Attachment types Claude Code injects for its own purposes.
+    ///
+    /// These exist to prompt the model, not to record what happened, and they
+    /// outnumber real attachments by more than ten to one. Archiving them would
+    /// bury the conversation in bookkeeping.
+    ///
+    /// The list is a deny-list on purpose: an attachment type not named here is
+    /// preserved, so a new one is kept rather than silently lost.
+    const INTERNAL: &'static [&'static str] = &[
+        "total_tokens_reminder",
+        "task_reminder",
+        "deferred_tools_delta",
+        "agent_listing_delta",
+        "mcp_instructions_delta",
+        "skill_listing",
+        "auto_mode",
+    ];
+
+    /// Whether this is Claude Code talking to itself.
+    pub fn is_internal(&self) -> bool {
+        self.kind
+            .as_deref()
+            .is_some_and(|k| Self::INTERNAL.contains(&k))
+    }
+
+    /// The text worth preserving, if any.
+    pub fn text(&self) -> Option<String> {
+        if let Some(t) = self.snippet.as_deref().or(self.text.as_deref()) {
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+        if let Some(p) = self.prompt.as_deref().filter(|p| !p.is_empty()) {
+            return Some(p.to_string());
+        }
+        match self.content.as_ref() {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            Some(serde_json::Value::Null) | None => None,
+            Some(other) => Some(other.to_string()),
+        }
+    }
+
+    /// A label for this attachment, for the event's provider kind.
+    pub fn label(&self) -> String {
+        match (&self.kind, &self.filename) {
+            (Some(k), Some(f)) => format!("attachment:{k}:{f}"),
+            (Some(k), None) => format!("attachment:{k}"),
+            (None, _) => "attachment".to_string(),
+        }
     }
 }
 
