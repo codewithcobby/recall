@@ -285,3 +285,128 @@ Worth a few minutes, since these are the cases a line-delimited format gets wron
 - [ ] A truncated file is refused, naming the line
 - [ ] An unsupported format version is refused
 - [ ] An empty file is refused rather than read as an empty session
+
+---
+
+## Phase 3 — the local archive
+
+Implemented by #13, #14 and #15.
+
+Phase 2 defined what a session is. Phase 3 puts one on disk and gets it back, so
+this is the first phase where conversation content is written anywhere.
+
+Still no CLI surface — no command touches the archive until `recall sync` in #24
+— so the example does the driving. It works in a temporary project that is
+removed when it exits; nothing touches a real project or your home directory.
+
+### 1. Run the example
+
+```bash
+cargo run --example archive_roundtrip
+```
+
+### 2. Where the session landed
+
+```text
+  session id   7d5e57020a19ce9b19891dcdc613cdd4
+  archived at  .recall/sessions/2026/09/08/7d5e57020a19ce9b19891dcdc613cdd4.jsonl
+```
+
+The path is the whole design in one line: filed by **UTC date**, named by the
+**derived id**, and the extension names the **encoding**. Compression in #16
+changes `.jsonl` to `.zst` and nothing else about this.
+
+### 3. Permissions, all the way down
+
+```text
+  0700        .recall/
+  0700        .recall/sessions/2026/09/08/
+  0600        .recall/sessions/2026/09/08/7d5e5702….jsonl
+  0700        .recall/tmp/
+  staging holds 0 file(s)
+```
+
+**Every directory created on the way down must be `0700`, and the archive
+`0600`.** A single `0755` anywhere in that chain means another user on the
+machine can read archived conversations. This is worth reading line by line
+rather than trusting.
+
+`staging holds 0 file(s)` is the other thing to check. A file left in `tmp/`
+after a successful write would mean the write was not as atomic as it claims.
+
+### 4. Writing the same session twice
+
+```text
+  reported as new:      false
+  bytes on disk changed: false
+```
+
+Both must be `false`. `recall sync` will run over the same sessions repeatedly,
+and an archive that gets rewritten each time is an archive that can be corrupted
+by a crash at the wrong moment. The second write reports "already present" and
+touches nothing.
+
+### 5. Reading it back
+
+```text
+  identical to what we archived: true
+  events recovered:              6
+```
+
+Anything but `true` is data loss.
+
+### 6. Damaged archives
+
+```text
+  truncated        refused: … is not readable as a session  (line 3 is not a valid session record)
+  emptied          refused: … is not readable as a session  (session file is empty)
+  garbage bytes    refused: … is not readable as a session  (line 1 is not valid UTF-8, …)
+  future version   refused: … is not readable as a session  (session format version 99 is not supported …)
+  missing          refused: no archived session with id 7d5e5702…
+  a directory      refused: … is not a file
+```
+
+**Every line must say `refused`.** An `ACCEPTED` anywhere is a serious bug.
+
+The `emptied` row is the one that matters most. If a zero-byte archive read back
+as a session with no events, a caller would conclude the conversation *was*
+empty rather than that it was lost — which is exactly the silent data loss
+`.github/SECURITY.md` commits to preventing.
+
+Note each refusal names both the session and the cause. "Missing" and "a
+directory" are deliberately different: saying "no such session" when a directory
+is sitting at the path would send you looking in the wrong place entirely.
+
+### 7. One bad archive among several
+
+```text
+  archives found:    3
+  read successfully: 2
+  reported broken:   1
+```
+
+Three sessions archived, the middle one corrupted. The other two must still
+read. The archive may be the only copy of the sessions that are still fine, so a
+single damaged file must never take the rest down with it.
+
+### 8. Break it yourself
+
+- Change a session's start to `datetime!(2026-09-09 01:30:00 +05:00)`. It must
+  file under `2026/09/08`.
+- Add a `.md` file next to an archive and re-run. It must be ignored, not
+  counted as a session.
+- Rename an archive from `.jsonl` to `.zst`. It must be refused as an encoding
+  this build cannot decode — *not* parsed as JSON Lines and blamed on the
+  content.
+
+### Phase 3 checklist
+
+- [ ] The session lands under `.recall/sessions/<UTC year>/<month>/<day>/`
+- [ ] The archive is `0600` and every directory to it is `0700`
+- [ ] Staging is empty after a successful write
+- [ ] Writing the same session twice reports "not new" and changes no bytes
+- [ ] The session reads back identical
+- [ ] Truncated, emptied, garbage, future-version, missing and directory are all refused
+- [ ] Each refusal names the session and the cause
+- [ ] An emptied archive is never read as a session with zero events
+- [ ] Two good archives still read when a third is corrupted
