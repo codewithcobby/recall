@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod sync;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use recall_store::InitOutcome;
@@ -54,7 +56,7 @@ impl Command {
     fn tracking_issue(&self) -> Option<u32> {
         match self {
             Command::Init => None,
-            Command::Sync => Some(24),
+            Command::Sync => None,
             Command::Sessions => Some(28),
             Command::Show { .. } => Some(29),
             Command::Search { .. } => Some(38),
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         Command::Init => run_init(),
+        Command::Sync => run_sync(),
         // Every other command returned above.
         _ => unreachable!("handled by the tracking-issue branch"),
     };
@@ -102,6 +105,44 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// `recall sync`
+fn run_sync() -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    let summary = sync::sync(&project_root)?;
+
+    if summary.found == 0 {
+        println!("No AI sessions found for {}", project_root.display());
+        return Ok(());
+    }
+
+    println!(
+        "{} session{} found: {} archived, {} already had",
+        summary.found,
+        if summary.found == 1 { "" } else { "s" },
+        summary.archived,
+        summary.already_had
+    );
+
+    if summary.in_progress > 0 {
+        println!(
+            "  {} still being written — left for a later run, so nothing is archived half-finished",
+            summary.in_progress
+        );
+    }
+
+    if summary.had_failures() {
+        println!("\n{} could not be archived:", summary.failures.len());
+        for failure in &summary.failures {
+            println!(
+                "  {} {}: {}",
+                failure.provider, failure.provider_session_id, failure.reason
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `recall init`

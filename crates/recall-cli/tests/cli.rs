@@ -60,8 +60,13 @@ fn unknown_command_is_rejected() {
 #[test]
 fn unimplemented_commands_do_not_exit_zero() {
     // Exiting 0 would tell a script the work was done. Each names its issue.
-    for command in ["sync", "sessions"] {
-        let out = recall(&[command]);
+    for command in ["sessions", "search"] {
+        let args: Vec<&str> = if command == "search" {
+            vec![command, "anything"]
+        } else {
+            vec![command]
+        };
+        let out = recall(&args);
         assert!(!out.status.success(), "`recall {command}` exited zero");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -69,6 +74,36 @@ fn unimplemented_commands_do_not_exit_zero() {
             "`recall {command}` said: {stderr}"
         );
     }
+}
+
+#[test]
+fn sync_without_init_refuses_and_says_what_to_do() {
+    let project = tempfile::tempdir().expect("temp dir");
+    let out = recall_in(project.path(), &["sync"]);
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("recall init"),
+        "the error did not say what to do: {stderr}"
+    );
+}
+
+#[test]
+fn sync_on_an_initialized_project_with_no_sessions_succeeds_quietly() {
+    // No provider sessions belong to a throwaway directory, so this is the
+    // ordinary "nothing to do" case rather than an error.
+    let project = tempfile::tempdir().expect("temp dir");
+    assert!(recall_in(project.path(), &["init"]).status.success());
+
+    let out = recall_in(project.path(), &["sync"]);
+    assert!(
+        out.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("No AI sessions found"), "said: {stdout}");
 }
 
 #[test]
