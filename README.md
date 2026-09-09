@@ -148,19 +148,25 @@ Recall maintains its own project-level archive of sessions:
 
 ```text
 .recall/
+├── config.toml                     format version and project settings
 ├── sessions/
-│   ├── 2026/
-│   │   └── 09/
-│   │       └── 08/
-│   │           ├── session-abc.zst
-│   │           └── session-def.zst
-│   └── ...
-└── index.db
+│   └── 2026/09/08/
+│       ├── session-abc.zst
+│       └── session-def.zst
+├── tmp/                            staging for atomic writes
+└── index.db                        derived metadata index
 ```
 
 Conversations are stored compressed, to keep the archive small while retaining the
 original information. Metadata is indexed separately, so searching does not require
 loading every conversation.
+
+Sessions are filed by their start date in UTC, so the same session lands in the same
+place regardless of the machine's timezone. The index is derived data — deleting it
+loses nothing, because it rebuilds from the archives.
+
+The full specification, including which paths Recall owns and which it will never
+touch, is in [`docs/archive-layout.md`](docs/archive-layout.md).
 
 ## Git Awareness
 
