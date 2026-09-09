@@ -26,15 +26,42 @@ pub const TMP_DIR: &str = "tmp";
 /// The derived metadata index.
 pub const INDEX_FILE: &str = "index.db";
 
-/// Extension for an uncompressed session archive.
+/// Extension for a session archive.
 ///
 /// The encoding is named by the extension, so a reader knows how to decode a
-/// file before opening it. Zstandard archives (`.zst`) arrive in #16; until
-/// then everything is written uncompressed, and readers accept both.
-pub const SESSION_EXTENSION: &str = "jsonl";
+/// file before opening it. This is what archives are written as today:
+/// Zstandard-compressed JSON Lines.
+pub const SESSION_EXTENSION: &str = "zst";
 
-/// Extension for a Zstandard-compressed session archive (#16).
-pub const COMPRESSED_SESSION_EXTENSION: &str = "zst";
+/// Extension for an uncompressed session archive.
+///
+/// Written before compression landed in #16. Still read, so an archive created
+/// by an earlier build stays readable without a migration — which is the whole
+/// point of naming the encoding in the extension.
+pub const UNCOMPRESSED_SESSION_EXTENSION: &str = "jsonl";
+
+/// Zstandard level used for new archives.
+///
+/// Sessions are written once and read rarely, so this favours ratio over write
+/// speed. Measured over a 620 KB synthetic transcript of agent work — prose,
+/// code in tool results, command output, JSON arguments:
+///
+/// | level | bytes | ratio | compress | decompress |
+/// |-------|-------|-------|----------|------------|
+/// | 3 (default) | 73,635 | 8.4x | 2.0 ms | 674 µs |
+/// | 9 | 68,128 | 9.1x | 10.6 ms | 377 µs |
+/// | **12** | **62,950** | **9.9x** | **10.4 ms** | **223 µs** |
+/// | 15 | 59,736 | 10.4x | 26.6 ms | 172 µs |
+/// | 19 | 56,092 | 11.1x | 128.9 ms | 188 µs |
+///
+/// 12 is where the curve bends: 14% smaller than the default for about 10 ms on
+/// a large session, where 19 costs 64 times the default's write time for a
+/// further 10%. Higher levels also *decompress* faster here, since there is
+/// less to read back.
+///
+/// Ratios on real transcripts will differ; the shape of the curve is the part
+/// that generalises.
+pub const COMPRESSION_LEVEL: i32 = 12;
 
 /// The archive layout this build understands.
 ///

@@ -17,6 +17,7 @@ recall-core = { version = "0.1.0", path = "../recall-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
 toml = "1.1.5"
+zstd = "0.14.0"
 
 [dev-dependencies]
 recall-core = { path = "../recall-core" }

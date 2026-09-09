@@ -30,6 +30,15 @@ fn main() {
     println!("  archived at  {}", relative(stored.path(), project.path()));
     println!("  newly written {}", stored.is_new());
 
+    let mut encoded = Vec::new();
+    recall_core::write_session(&mut encoded, &session).expect("encode");
+    let on_disk = fs::metadata(stored.path()).expect("metadata").len();
+    println!(
+        "  compressed   {} bytes encoded -> {on_disk} on disk ({:.1}x)",
+        encoded.len(),
+        encoded.len() as f64 / on_disk as f64
+    );
+
     println!("\n== 2. what is on disk ==");
     for path in walk(&project.path().join(".recall")) {
         let meta = fs::symlink_metadata(&path).expect("metadata");
@@ -72,14 +81,10 @@ fn main() {
     let good = fs::read(&path).expect("read");
 
     let root = project.path();
-    damage(
-        &archive,
-        &session.id,
-        &path,
-        "truncated",
-        &good[..good.len() / 2],
-        root,
-    );
+
+    // Damage at the compression layer.
+    let half = &good[..good.len() / 2];
+    damage(&archive, &session.id, &path, "truncated frame", half, root);
     damage(&archive, &session.id, &path, "emptied", b"", root);
     damage(
         &archive,
@@ -89,13 +94,36 @@ fn main() {
         &[0xff, 0x00, 0x42],
         root,
     );
-    let future = String::from_utf8_lossy(&good).replacen("\"format\":1", "\"format\":99", 1);
+
+    // A single flipped bit inside an otherwise valid frame. Zstandard
+    // checksums its frames, so this is caught rather than decoded into
+    // whatever the corrupted bytes happen to mean.
+    let mut flipped = good.clone();
+    let middle = flipped.len() / 2;
+    flipped[middle] ^= 0x01;
+    damage(
+        &archive,
+        &session.id,
+        &path,
+        "one flipped bit",
+        &flipped,
+        root,
+    );
+
+    // Damage inside the session, under a perfectly valid frame: the archive
+    // decompresses cleanly and the session it holds is from a newer Recall.
+    let plain = zstd::decode_all(good.as_slice()).expect("decompress");
+    let future =
+        String::from_utf8(plain)
+            .expect("utf8")
+            .replacen("\"format\":1", "\"format\":99", 1);
+    let repacked = zstd::encode_all(future.as_bytes(), 1).expect("recompress");
     damage(
         &archive,
         &session.id,
         &path,
         "future version",
-        future.as_bytes(),
+        &repacked,
         root,
     );
 
@@ -153,12 +181,18 @@ fn report(what: &str, result: Result<Session, ArchiveError>, project: &Path) {
             session.event_count()
         ),
         Err(e) => {
-            let cause = std::error::Error::source(&e)
-                .map(|c| format!("  ({c})"))
-                .unwrap_or_default();
+            // The whole chain, because the useful detail is at the bottom: the
+            // top says which session, the middle says what kind of problem, the
+            // bottom says what actually went wrong.
+            let mut chain = vec![tidy(&e.to_string(), project)];
+            let mut cause: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+            while let Some(c) = cause {
+                chain.push(tidy(&c.to_string(), project));
+                cause = c.source();
+            }
             println!(
-                "  {what:<16} refused: {}{cause}",
-                tidy(&e.to_string(), project)
+                "  {what:<16} refused: {}",
+                chain.join("\n                     <- ")
             );
         }
     }
