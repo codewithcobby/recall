@@ -5,4 +5,12 @@
 //! atomic and a damaged archive is reported rather than silently repaired —
 //! see `.github/SECURITY.md`.
 //!
-//! Implementation lands in #13.
+//! The on-disk layout is specified in `docs/archive-layout.md`.
+//!
+//! Reading and writing sessions lands in #13.
+
+pub mod init;
+pub mod layout;
+
+pub use init::{init, InitError, InitOutcome};
+pub use layout::{Layout, FORMAT_VERSION};
