@@ -1,0 +1,3 @@
+{"type":"user","uuid":"u1","timestamp":"2026-09-08T12:00:00.000Z","cwd":"/w/demo","sessionId":"malformed","message":{"role":"user","content":"before the break"}}
+{ this line is not json at all
+{"type":"user","uuid":"u2","timestamp":"2026-09-08T12:00:01.000Z","cwd":"/w/demo","sessionId":"malformed","message":{"role":"user","content":"after the break"}}

@@ -1,0 +1,5 @@
+{"type":"user","uuid":"u1","timestamp":"2026-09-08T12:00:00.000Z","cwd":"/w/demo","sessionId":"cmds","toolUseResult":{"stdout":"42 passed; 0 failed\n","stderr":"","interrupted":false,"isImage":false}}
+{"type":"user","uuid":"u2","timestamp":"2026-09-08T12:00:01.000Z","cwd":"/w/demo","sessionId":"cmds","toolUseResult":{"stdout":"","stderr":"error: could not compile\n","interrupted":false,"isImage":false}}
+{"type":"user","uuid":"u3","timestamp":"2026-09-08T12:00:02.000Z","cwd":"/w/demo","sessionId":"cmds","toolUseResult":{"filePath":"/w/demo/src/fetch.rs","structuredPatch":[],"originalFile":"old contents","userModified":false}}
+{"type":"user","uuid":"u4","timestamp":"2026-09-08T12:00:03.000Z","cwd":"/w/demo","sessionId":"cmds","toolUseResult":{"filePath":"/w/demo/src/only_read.rs"}}
+{"type":"user","uuid":"u5","timestamp":"2026-09-08T12:00:04.000Z","cwd":"/w/demo","sessionId":"cmds","toolUseResult":{"filePath":"/w/demo/src/edit.rs","oldString":"a","newString":"b","replaceAll":false}}
