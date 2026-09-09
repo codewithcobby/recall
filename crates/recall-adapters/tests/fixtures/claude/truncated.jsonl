@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u1","timestamp":"2026-09-08T12:00:00.000Z","cwd":"/w/demo","sessionId":"truncated","message":{"role":"user","content":"complete record"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-09-08T12:00:01.000Z","message":{"role":"assist

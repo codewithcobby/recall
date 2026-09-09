@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u1","timestamp":"2026-09-08T12:00:00.000Z","cwd":"/w/demo","sessionId":"string-content","message":{"role":"user","content":"content as a bare string"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-09-08T12:00:01.000Z","sessionId":"string-content","message":{"role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"content as an array"}]}}

@@ -6,10 +6,12 @@
 //! crates that implement its traits — see the dependency direction in
 //! `.github/CONTRIBUTING.md`.
 
+pub mod adapter;
 pub mod event;
 pub mod format;
 pub mod session;
 
+pub use adapter::{Adapter, AdapterError, DiscoveredSession};
 pub use event::{FileAction, SessionEvent};
 pub use format::{read_session, write_session, FormatError, SESSION_FORMAT_VERSION};
 pub use session::{GitContext, Provider, ProviderError, Session, SessionId};

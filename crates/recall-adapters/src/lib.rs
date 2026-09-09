@@ -5,5 +5,9 @@
 //! [`recall_core`]'s model. Adapters open provider files read-only and treat
 //! their contents as untrusted input.
 //!
-//! Provider-specific types stay inside this crate. The Claude Code adapter
-//! lands in #19.
+//! Provider-specific types stay inside this crate. If something agent-shaped
+//! has to exist in `recall-core` for an adapter to work, the trait is wrong.
+
+pub mod claude;
+
+pub use claude::ClaudeCode;
