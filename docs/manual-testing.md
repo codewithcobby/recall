@@ -425,3 +425,95 @@ single damaged file must never take the rest down with it.
 - [ ] Each refusal names the session and the cause
 - [ ] An emptied archive is never read as a session with zero events
 - [ ] Two good archives still read when a third is corrupted
+
+---
+
+## Phase 6 — `recall sync`
+
+Implemented by #24, #25, #26 and #27, plus the fix in #115.
+
+The first phase with something to actually run. Everything before this built one
+half or the other; `recall sync` is where they meet.
+
+### 1. Sync a project you have used Claude Code in
+
+```bash
+cd /a/project/you/have/used/claude/code/in
+recall init
+recall sync
+```
+
+Expect something like:
+
+```text
+1 session found: 1 archived, 0 already had
+```
+
+If it says `No AI sessions found`, the sessions Claude Code has do not record
+this directory as their working directory — check that you have actually run
+Claude Code here.
+
+### 2. Look at what landed
+
+```bash
+find .recall/sessions -name '*.zst'
+du -sh .recall
+```
+
+One `.zst` per session, filed under its **UTC** start date and named by the
+derived id, not Claude Code's.
+
+### 3. Sync again
+
+```bash
+time recall sync
+```
+
+Expect `0 archived, 1 already had`, and expect it to be **much** faster than the
+first run — on this repository, 0.006s against 0.305s. That gap is the point of
+#25: an already-archived session is recognised from its id and never read at
+all.
+
+### 4. A session you are in the middle of
+
+Run `recall sync` from a project while a Claude Code session is open and
+active in it:
+
+```text
+1 session found: 0 archived, 0 already had
+  1 still being written — left for a later run, so nothing is archived half-finished
+```
+
+**This is the behaviour worth understanding.** Archives are never rewritten and
+an archived session is skipped without being read, so capturing a conversation
+mid-flight would freeze its first half and lose the rest permanently. Sync waits
+until the file has been quiet for five minutes.
+
+### 5. Another project's sessions stay out
+
+Sync in project A; sessions from project B must not appear in A's archive.
+Sessions are matched by the working directory recorded inside them, and a
+subdirectory of the project counts while a sibling with a similar name does not.
+
+### 6. The provider's files are never touched
+
+```bash
+ls -l ~/.claude/projects/<a-project>/
+recall sync
+ls -l ~/.claude/projects/<a-project>/
+```
+
+Sizes and modification times must be identical. Recall reads Claude Code's
+history; it never writes to it.
+
+### Phase 6 checklist
+
+- [ ] `recall sync` in an uninitialized project refuses and says to run `recall init`
+- [ ] A session from this project is archived as a `.zst` under its UTC start date
+- [ ] The archive reads back as the same conversation
+- [ ] A second sync archives nothing and is dramatically faster
+- [ ] A second sync leaves the archive bytes identical
+- [ ] A session still being written is reported and not archived
+- [ ] Another project's sessions are not archived here
+- [ ] One unreadable session is reported and the others still land
+- [ ] `~/.claude` is unchanged after a sync
