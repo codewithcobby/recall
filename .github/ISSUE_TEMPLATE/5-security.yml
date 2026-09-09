@@ -1,0 +1,70 @@
+name: Security hardening
+description: Non-exploitable security concerns and hardening suggestions.
+title: "[security] "
+labels: ["security", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Stop if this is exploitable.**
+        > An unpatched vulnerability — anything that could leak, corrupt, or exfiltrate
+        > archived conversations, or execute code from a session file — goes through
+        > [private disclosure](https://github.com/codewithcobby/recall/security/advisories/new),
+        > not a public issue. This template is for hardening work that is safe to discuss openly.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Concern type
+      options:
+        - Hardening suggestion
+        - Dependency / supply-chain concern
+        - Unsafe default or footgun
+        - Threat-model question
+        - Request for a security review of an area
+    validations:
+      required: true
+
+  - type: textarea
+    id: concern
+    attributes:
+      label: Concern
+      description: What is weaker than it should be, and where in the codebase.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - label: Reading provider session files (untrusted input parsing)
+        - label: Archive at rest (`.recall/sessions`)
+        - label: Index database (`.recall/index.db`)
+        - label: Secrets or credentials captured in transcripts
+        - label: File permissions on archive contents
+        - label: Anything that leaves the machine (network, telemetry)
+        - label: Dependencies
+        - label: Build or release pipeline
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact if left unaddressed
+    validations:
+      required: true
+
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: Suggested mitigation
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is not an exploitable vulnerability; it is safe to discuss in public.
+          required: true
+        - label: This issue contains no working exploit or extraction path.
+          required: true

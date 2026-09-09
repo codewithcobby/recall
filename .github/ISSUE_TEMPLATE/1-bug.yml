@@ -1,0 +1,119 @@
+name: Bug report
+description: Something in Recall behaves incorrectly.
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Recall handles your local AI session transcripts. **Redact before pasting.**
+        Conversation excerpts may contain source code, credentials, or private prompts —
+        include only the minimum needed to reproduce.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: One or two sentences on the incorrect behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, in order. Include the working directory if it matters.
+      value: |
+        1. `recall init`
+        2. `recall sync`
+        3. ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the full error, and the output of the command run with `RECALL_LOG=debug` if you have it.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Best guess is fine.
+      options:
+        - Discovery (finding sessions on disk)
+        - Provider adapter (parsing a provider's session format)
+        - Normalization (provider format to Recall's session model)
+        - Archive / compression (.recall/sessions)
+        - Index / database (.recall/index.db)
+        - Search
+        - Git context (branch, commit, changed files)
+        - CLI ergonomics (flags, output, exit codes)
+        - Install / build
+        - Unsure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which AI coding agent produced the session?
+      multiple: true
+      options:
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - Other / custom adapter
+        - Not provider-specific
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Recall version
+      description: Output of `recall --version`, or the commit SHA if built from source.
+      placeholder: "0.1.0 (or 4f2a91c)"
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: OS and Rust toolchain
+      description: Output of `rustc -Vv | head -3` plus your OS version.
+      placeholder: "macOS 15.2 (arm64), rustc 1.85.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: data-loss
+    attributes:
+      label: Did any archived session data become unreadable, incorrect, or lost?
+      description: Answer "no" if unsure. Archive integrity bugs are triaged first.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for a duplicate.
+          required: true
+        - label: I redacted any private code, prompts, paths, or credentials from the excerpts above.
+          required: true
+        - label: I can reproduce this on the latest `dev`.
+          required: false

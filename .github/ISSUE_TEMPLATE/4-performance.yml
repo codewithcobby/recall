@@ -1,0 +1,90 @@
+name: Performance issue
+description: Recall is too slow, too large on disk, or uses too much memory.
+title: "[perf] "
+labels: ["performance", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Recall runs alongside your editor and agent, on archives that grow for years.
+        Concrete numbers make a report actionable; "it feels slow" does not.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is slow or oversized?
+      options:
+        - Command latency (wall clock)
+        - Memory usage
+        - Archive size on disk
+        - Index size or growth
+        - CPU usage during sync
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: "recall sync"
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement
+      description: How you measured, and the raw numbers. `time recall sync`, `/usr/bin/time -l`, `du -sh .recall`, or a profiler are all fine.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: scale
+    attributes:
+      label: Archive scale
+      description: The size of the input, which usually explains the timing.
+      value: |
+        - Sessions in archive:
+        - Largest single session (bytes, uncompressed):
+        - Total `.recall/` size:
+        - `.recall/index.db` size:
+        - Providers involved:
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: What would be acceptable?
+      placeholder: "sync of 500 sessions under 2s; currently 47s"
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: Hardware, OS, and filesystem
+      description: Filesystem matters — network drives, iCloud/Dropbox-synced directories, and WSL cross-mounts change results by orders of magnitude.
+      placeholder: "M2 Pro, 32GB, macOS 15.2, APFS local"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Recall version and build profile
+      description: Timings from a debug build are not comparable — measure a `--release` build.
+      placeholder: "0.1.0, release"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I measured a release build.
+          required: true
+        - label: I searched open and closed issues for a duplicate.
+          required: true
