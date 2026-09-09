@@ -4,16 +4,22 @@
 //! event in order.
 //!
 //! Line-delimited rather than one JSON document on purpose. A transcript can be
-//! hundreds of megabytes, and this shape lets both writing and reading work an
-//! event at a time — memory scales with the largest single event, not with the
-//! session. #16 and #17 compress and decompress this stream without having to
+//! hundreds of megabytes, and this shape lets writing and reading work an event
+//! at a time. #16 and #17 compress and decompress this stream without having to
 //! reshape it.
+//!
+//! Two ways to read one, and the difference matters:
+//!
+//! - [`SessionReader`] yields events as it goes, so memory is bounded by the
+//!   largest single event. Use it to print or scan a transcript.
+//! - [`read_session`] materialises the whole [`Session`]. Use it when a caller
+//!   genuinely needs one — archiving, for instance.
 //!
 //! It is also a text format, which means a damaged archive can still be
 //! inspected by hand. That mattered more than the bytes a binary encoding would
 //! have saved, since sessions are compressed anyway.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Lines, Write};
 
 use serde::{Deserialize, Serialize};
 
@@ -145,6 +151,81 @@ pub fn write_session<W: Write>(mut out: W, session: &Session) -> Result<(), Form
         })?;
     }
     Ok(())
+}
+
+/// Reads a session an event at a time.
+///
+/// The format was made line-delimited so this would be possible: the header is
+/// one line, then one line per event. A caller that only wants to *print* a
+/// transcript — `recall show` — has no reason to hold all of it, and a session
+/// can be arbitrarily large because nothing truncates it.
+///
+/// Memory here is bounded by the largest single event rather than by the
+/// session, which is what the rest of this module has always claimed and what
+/// [`read_session`] does not do.
+pub struct SessionReader<R: BufRead> {
+    header: SessionHeader,
+    lines: Lines<R>,
+    line_number: usize,
+}
+
+impl<R: BufRead> SessionReader<R> {
+    /// Read the header and stop, leaving the transcript unread.
+    pub fn open(input: R) -> Result<Self, FormatError> {
+        let mut lines = input.lines();
+        let first = lines.next().ok_or(FormatError::Empty)?;
+        let first = first.map_err(|source| classify(1, "reading the session header", source))?;
+
+        Ok(Self {
+            header: parse_header(&first)?,
+            lines,
+            line_number: 1,
+        })
+    }
+
+    /// The session's metadata.
+    pub fn header(&self) -> &SessionHeader {
+        &self.header
+    }
+
+    /// The session without its events, for callers that need the type.
+    pub fn into_session(self) -> Session {
+        self.header.session
+    }
+}
+
+impl<R: BufRead> Iterator for SessionReader<R> {
+    type Item = Result<SessionEvent, FormatError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let line = self.lines.next()?;
+            self.line_number += 1;
+
+            let line = match line {
+                Ok(line) => line,
+                Err(source) => {
+                    return Some(Err(classify(
+                        self.line_number,
+                        "reading a session event",
+                        source,
+                    )))
+                }
+            };
+
+            // A trailing newline at end of file is normal, not an event.
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            return Some(
+                serde_json::from_str(&line).map_err(|source| FormatError::Malformed {
+                    line: self.line_number,
+                    source,
+                }),
+            );
+        }
+    }
 }
 
 /// Read only a session's metadata.
@@ -489,6 +570,116 @@ mod tests {
 
         let err = read_session(buf.as_slice()).expect_err("must fail");
         assert!(matches!(err, FormatError::NotUtf8 { line: 2 }), "{err:?}");
+    }
+
+    #[test]
+    fn a_stream_yields_events_one_at_a_time() {
+        let mut s = session();
+        s.events = vec![
+            SessionEvent::UserMessage {
+                at: None,
+                content: "first".into(),
+            },
+            SessionEvent::AssistantMessage {
+                at: None,
+                content: "second".into(),
+            },
+        ];
+
+        let mut buf = Vec::new();
+        write_session(&mut buf, &s).expect("write");
+
+        let mut reader = SessionReader::open(buf.as_slice()).expect("open");
+        assert_eq!(reader.header().event_count, Some(2));
+
+        let events: Vec<_> = (&mut reader).map(|e| e.expect("event")).collect();
+        assert_eq!(events, s.events);
+    }
+
+    #[test]
+    fn a_stream_reads_the_header_without_touching_the_transcript() {
+        // The property the whole thing exists for: opening a session must not
+        // consume it.
+        let mut s = session();
+        s.events = (0..10_000)
+            .map(|i| SessionEvent::UserMessage {
+                at: None,
+                content: format!("event {i}"),
+            })
+            .collect();
+        let mut buf = Vec::new();
+        write_session(&mut buf, &s).expect("write");
+
+        let reader = SessionReader::open(buf.as_slice()).expect("open");
+        assert_eq!(reader.header().event_count, Some(10_000));
+        // Dropped without reading a single event, which must not be an error.
+        drop(reader);
+    }
+
+    #[test]
+    fn a_stream_reports_a_bad_line_with_its_number() {
+        let mut buf = Vec::new();
+        let mut s = session();
+        s.events = vec![SessionEvent::UserMessage {
+            at: None,
+            content: "fine".into(),
+        }];
+        write_session(&mut buf, &s).expect("write");
+        let mut text = String::from_utf8(buf).expect("utf8");
+        text.push_str("{\"kind\":\"telepathy\"}\n");
+
+        let mut reader = SessionReader::open(text.as_bytes()).expect("open");
+        assert!(reader.next().expect("first event").is_ok());
+        match reader.next().expect("second") {
+            Err(FormatError::Malformed { line, .. }) => assert_eq!(line, 3),
+            other => panic!("expected a malformed-line error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stream_is_refused_on_the_same_terms_as_a_session() {
+        assert!(matches!(
+            SessionReader::open(&b""[..]).map(|_| ()),
+            Err(FormatError::Empty)
+        ));
+
+        let mut buf = Vec::new();
+        write_session(&mut buf, &session()).expect("write");
+        let unknown =
+            String::from_utf8(buf)
+                .expect("utf8")
+                .replacen("\"format\":1", "\"format\":99", 1);
+        assert!(matches!(
+            SessionReader::open(unknown.as_bytes()).map(|_| ()),
+            Err(FormatError::UnsupportedVersion { found: 99, .. })
+        ));
+    }
+
+    #[test]
+    fn a_streamed_session_matches_a_loaded_one() {
+        // Two ways of reading the same bytes must agree.
+        let mut s = session();
+        s.events = vec![
+            SessionEvent::UserMessage {
+                at: None,
+                content: "line\nwith\nnewlines".into(),
+            },
+            SessionEvent::ToolResult {
+                at: None,
+                call_id: Some("t1".into()),
+                content: "x".repeat(100_000),
+                failed: Some(false),
+            },
+        ];
+        let mut buf = Vec::new();
+        write_session(&mut buf, &s).expect("write");
+
+        let loaded = read_session(buf.as_slice()).expect("read");
+        let streamed: Vec<_> = SessionReader::open(buf.as_slice())
+            .expect("open")
+            .map(|e| e.expect("event"))
+            .collect();
+        assert_eq!(loaded.events, streamed);
     }
 
     #[test]

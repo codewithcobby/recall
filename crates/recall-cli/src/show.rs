@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::exit::Problem;
-use recall_core::{Session, SessionEvent};
+use recall_core::{SessionEvent, SessionHeader};
 use recall_store::Archive;
 
 /// Print an archived session.
@@ -41,25 +41,32 @@ pub fn show(project_root: &Path, wanted: &str, metadata_only: bool) -> Result<()
         }
     };
 
-    let session = archive.read(&id)?;
+    // Streamed, not loaded. A transcript is printed once and never revisited,
+    // and nothing truncates it, so holding a whole session in memory to write
+    // it out costs memory proportional to the conversation for no benefit.
+    let mut stream = archive.stream(&id)?;
 
     // Locked and buffered: a large transcript is thousands of writes, and
     // unbuffered stdout makes that painfully slow.
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
 
-    write_metadata(&mut out, &session)?;
-    if !metadata_only {
-        writeln!(out)?;
-        for event in &session.events {
-            write_event(&mut out, event)?;
-        }
+    write_metadata(&mut out, stream.header())?;
+    if metadata_only {
+        out.flush()?;
+        return Ok(());
+    }
+
+    writeln!(out)?;
+    for event in &mut stream {
+        write_event(&mut out, &event?)?;
     }
     out.flush()?;
     Ok(())
 }
 
-fn write_metadata(out: &mut impl Write, s: &Session) -> Result<()> {
+fn write_metadata(out: &mut impl Write, header: &SessionHeader) -> Result<()> {
+    let s = &header.session;
     writeln!(out, "session  {}", s.id)?;
     writeln!(out, "provider {}", s.provider)?;
     if let Some(model) = &s.model {
@@ -78,7 +85,17 @@ fn write_metadata(out: &mut impl Write, s: &Session) -> Result<()> {
     if let Some(branch) = s.git.as_ref().and_then(|g| g.branch.as_deref()) {
         writeln!(out, "branch   {branch}")?;
     }
-    writeln!(out, "events   {}", s.event_count())?;
+    // From the header, so this is known before a single event is read. An
+    // archive written before the count existed shows "?" rather than dropping
+    // the field: counting would mean reading the transcript first, which is
+    // exactly what streaming avoids.
+    writeln!(
+        out,
+        "events   {}",
+        header
+            .event_count
+            .map_or_else(|| "?".to_string(), |n| n.to_string())
+    )?;
     Ok(())
 }
 

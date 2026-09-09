@@ -196,3 +196,88 @@ fn show_without_init_refuses_and_says_what_to_do() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("recall init"));
 }
+
+#[test]
+fn show_prints_the_first_event_without_reading_the_last() {
+    // The point of streaming: a transcript is printed as it is read. Verified
+    // by content rather than by timing, which would be flaky.
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    let root = project.path().canonicalize().expect("canonical");
+
+    // A session big enough that loading it would be visible.
+    let slug = root.display().to_string().replace('/', "-");
+    let dir = home.path().join(".claude/projects").join(slug);
+    fs::create_dir_all(&dir).expect("mkdir");
+    let mut lines = String::new();
+    for i in 0..5_000 {
+        lines.push_str(&format!(
+            "{{\"type\":\"user\",\"timestamp\":\"2026-09-08T12:00:00.000Z\",\"cwd\":\"{}\",\"message\":{{\"role\":\"user\",\"content\":\"event {i}\"}}}}\n",
+            root.display()
+        ));
+    }
+    let path = dir.join("big.jsonl");
+    fs::write(&path, lines).expect("write");
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("open")
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .expect("backdate");
+
+    recall_in(&root, home.path(), &["init"]);
+    recall_in(&root, home.path(), &["sync"]);
+
+    let listed = recall_in(&root, home.path(), &["sessions"]);
+    let id = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .nth(1)
+        .and_then(|l| l.split_whitespace().next())
+        .expect("an id")
+        .to_string();
+
+    let out = recall_in(&root, home.path(), &["show", &id]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("event 0"), "the first event is missing");
+    assert!(stdout.contains("event 4999"), "the last event is missing");
+    assert!(
+        stdout.contains("events   5000"),
+        "count not from the header"
+    );
+}
+
+#[test]
+fn a_summary_does_not_read_the_transcript_at_all() {
+    // --summary answers from the header alone, so it stays cheap however large
+    // the session is.
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    let root = project.path().canonicalize().expect("canonical");
+    claude_session(
+        home.path(),
+        &root,
+        "one",
+        "2026-09-01T12:00:00.000Z",
+        "hello",
+    );
+    recall_in(&root, home.path(), &["init"]);
+    recall_in(&root, home.path(), &["sync"]);
+
+    let listed = recall_in(&root, home.path(), &["sessions"]);
+    let id = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .nth(1)
+        .and_then(|l| l.split_whitespace().next())
+        .expect("an id")
+        .to_string();
+
+    let out = recall_in(&root, home.path(), &["show", &id, "--summary"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("events   2"), "{stdout}");
+    assert!(
+        !stdout.contains("hello"),
+        "the transcript was read: {stdout}"
+    );
+}

@@ -14,6 +14,7 @@ pub mod session;
 pub use adapter::{Adapter, AdapterError, DiscoveredSession};
 pub use event::{FileAction, SessionEvent};
 pub use format::{
-    read_header, read_session, write_session, FormatError, SessionHeader, SESSION_FORMAT_VERSION,
+    read_header, read_session, write_session, FormatError, SessionHeader, SessionReader,
+    SESSION_FORMAT_VERSION,
 };
 pub use session::{GitContext, Provider, ProviderError, Session, SessionId};

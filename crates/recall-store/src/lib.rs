@@ -13,6 +13,6 @@ pub mod archive;
 pub mod init;
 pub mod layout;
 
-pub use archive::{Archive, ArchiveEntry, ArchiveError, Stored};
+pub use archive::{Archive, ArchiveEntry, ArchiveError, ArchiveStream, Stored};
 pub use init::{init, InitError, InitOutcome};
 pub use layout::{Layout, COMPRESSION_LEVEL, FORMAT_VERSION};
