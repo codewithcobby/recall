@@ -367,6 +367,7 @@ dependencies = [
  "recall-index",
  "recall-store",
  "tempfile",
+ "time",
 ]
 
 [[package]]

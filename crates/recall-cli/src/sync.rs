@@ -4,6 +4,7 @@
 //! built one half or the other, and this is where they meet.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use recall_adapters::ClaudeCode;
@@ -21,12 +22,25 @@ pub struct Summary {
     ///
     /// Recognised without reading them.
     pub already_had: usize,
+    /// Sessions still being written, left for a later run.
+    pub in_progress: usize,
     /// Sessions that could not be archived, with the reason.
     ///
     /// Collected rather than returned early: one unreadable session must not
     /// cost the user every session after it.
     pub failures: Vec<Failure>,
 }
+
+/// How long a session file must be untouched before it is archived.
+///
+/// Archives are never rewritten, and an already-archived session is skipped
+/// without being read. Archiving a conversation that is still going would
+/// therefore capture its first half and lose the rest permanently — the worst
+/// possible outcome for a tool whose purpose is preservation.
+///
+/// Waiting costs only latency: the session is archived by the next run, and
+/// `recall watch` (#48) will make that automatic.
+pub const QUIET_PERIOD: Duration = Duration::from_secs(5 * 60);
 
 /// One session that could not be archived.
 #[derive(Debug, PartialEq, Eq)]
@@ -83,6 +97,14 @@ fn sync_adapter(
         }
         summary.found += 1;
 
+        // A session still being appended to is left for a later run.
+        if let Some(modified) = session.modified {
+            if is_recent(modified, QUIET_PERIOD) {
+                summary.in_progress += 1;
+                continue;
+            }
+        }
+
         // Recall's session id derives from the provider and the provider's own
         // id, so it is knowable before anything is read. Checking here is what
         // makes a repeat sync cheap: the alternative is parsing a transcript to
@@ -108,8 +130,9 @@ fn sync_adapter(
         }
 
         match archive_one(adapter, archive, &session) {
-            Ok(Stored::Written(_)) => summary.archived += 1,
-            Ok(Stored::AlreadyPresent(_)) => summary.already_had += 1,
+            Ok(Outcome::Stored(Stored::Written(_))) => summary.archived += 1,
+            Ok(Outcome::Stored(Stored::AlreadyPresent(_))) => summary.already_had += 1,
+            Ok(Outcome::StillBeingWritten) => summary.in_progress += 1,
             Err(reason) => summary.failures.push(Failure {
                 provider: adapter.provider().to_string(),
                 provider_session_id: session.provider_session_id.clone(),
@@ -128,9 +151,46 @@ fn archive_one(
     adapter: &dyn Adapter,
     archive: &Archive,
     discovered: &DiscoveredSession,
-) -> Result<Stored, String> {
+) -> Result<Outcome, String> {
+    let before = written_at(&discovered.path);
     let session = adapter.load(discovered).map_err(describe)?;
-    archive.write(&session).map_err(|e| describe_archive(&e))
+
+    // The session may have grown while it was being read, in which case what
+    // was loaded is a snapshot of something still in motion. Archiving it would
+    // freeze that snapshot forever.
+    if written_at(&discovered.path) != before {
+        return Ok(Outcome::StillBeingWritten);
+    }
+
+    archive
+        .write(&session)
+        .map(Outcome::Stored)
+        .map_err(|e| describe_archive(&e))
+}
+
+/// What happened to one session.
+enum Outcome {
+    Stored(Stored),
+    /// It changed while it was being read.
+    StillBeingWritten,
+}
+
+/// When a file was last written, if the filesystem will say.
+fn written_at(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Whether `moment` is within `window` of now.
+///
+/// A clock that has moved backwards makes this answer "no", which errs towards
+/// archiving. That is the right way to be wrong: the alternative is refusing to
+/// archive anything until the clock is fixed.
+fn is_recent(moment: time::OffsetDateTime, window: Duration) -> bool {
+    let now = time::OffsetDateTime::now_utc();
+    match now - moment {
+        elapsed if elapsed.is_negative() => false,
+        elapsed => elapsed.unsigned_abs() < window,
+    }
 }
 
 /// Whether a session was worked on inside this project.
@@ -221,6 +281,29 @@ mod tests {
         // it would put another project's conversation in this project's
         // archive.
         assert!(!belongs_to(&discovered(None), Path::new("/w/demo")));
+    }
+
+    #[test]
+    fn a_file_written_moments_ago_is_treated_as_in_progress() {
+        let now = time::OffsetDateTime::now_utc();
+        assert!(is_recent(now, QUIET_PERIOD));
+        assert!(is_recent(now - time::Duration::minutes(1), QUIET_PERIOD));
+    }
+
+    #[test]
+    fn a_file_untouched_for_longer_than_the_quiet_period_is_settled() {
+        let now = time::OffsetDateTime::now_utc();
+        assert!(!is_recent(now - time::Duration::minutes(10), QUIET_PERIOD));
+        assert!(!is_recent(now - time::Duration::days(30), QUIET_PERIOD));
+    }
+
+    #[test]
+    fn a_timestamp_in_the_future_does_not_block_archiving() {
+        // A clock that has moved, or a file copied from a machine whose clock
+        // differs. Refusing to archive until the clock is fixed would be the
+        // worse failure.
+        let ahead = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+        assert!(!is_recent(ahead, QUIET_PERIOD));
     }
 
     #[test]

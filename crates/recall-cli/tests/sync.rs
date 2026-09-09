@@ -18,12 +18,27 @@ fn recall_in(dir: &Path, home: &Path, args: &[&str]) -> Output {
         .expect("failed to run recall")
 }
 
+/// Backdate a file so sync treats it as settled rather than in progress.
+///
+/// Sessions written moments ago are deliberately left alone, so a test that
+/// wants one archived has to make it look finished.
+fn make_settled(path: &Path) {
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+    let f = fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open for touch");
+    f.set_modified(long_ago).expect("backdate");
+}
+
 /// A Claude Code session file for `project`, with `id`.
 fn claude_session(home: &Path, project: &Path, id: &str, events: &str) {
     let slug = project.display().to_string().replace('/', "-");
     let dir = home.join(".claude/projects").join(slug);
     fs::create_dir_all(&dir).expect("create project directory");
-    fs::write(dir.join(format!("{id}.jsonl")), events).expect("write session");
+    let path = dir.join(format!("{id}.jsonl"));
+    fs::write(&path, events).expect("write session");
+    make_settled(&path);
 }
 
 /// Two records: enough to be a session with a start and some content.
@@ -219,4 +234,68 @@ fn sync_never_modifies_the_providers_files() {
         mtime,
         "sync wrote to the provider's directory"
     );
+}
+
+#[test]
+fn a_session_still_being_written_is_left_for_a_later_run() {
+    // Archives are never rewritten and an archived session is skipped without
+    // being read, so capturing a conversation mid-flight would lose the rest of
+    // it permanently.
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    let root = project.path().canonicalize().expect("canonical");
+
+    claude_session(
+        home.path(),
+        &root,
+        "live",
+        &transcript(&root, "2026-09-08T12:00:00.000Z", "still going"),
+    );
+    // Undo the backdating: this one is being written right now.
+    let live = walk(&home.path().join(".claude"))
+        .into_iter()
+        .next()
+        .expect("the session file");
+    fs::File::options()
+        .write(true)
+        .open(&live)
+        .expect("open")
+        .set_modified(std::time::SystemTime::now())
+        .expect("touch");
+
+    recall_in(&root, home.path(), &["init"]);
+    let out = recall_in(&root, home.path(), &["sync"]);
+    assert!(out.status.success());
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("still being written"),
+        "an in-progress session was not reported: {stdout}"
+    );
+    assert_eq!(
+        archives_in(&root),
+        0,
+        "a conversation was archived while it was still happening"
+    );
+}
+
+#[test]
+fn a_session_that_has_settled_is_archived_on_the_next_run() {
+    // The other half of the promise: waiting costs latency, not the session.
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    let root = project.path().canonicalize().expect("canonical");
+
+    claude_session(
+        home.path(),
+        &root,
+        "settled",
+        &transcript(&root, "2026-09-08T12:00:00.000Z", "finished"),
+    );
+
+    recall_in(&root, home.path(), &["init"]);
+    let out = recall_in(&root, home.path(), &["sync"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 archived"), "said: {stdout}");
+    assert_eq!(archives_in(&root), 1);
 }

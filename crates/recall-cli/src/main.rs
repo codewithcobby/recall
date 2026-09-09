@@ -126,6 +126,13 @@ fn run_sync() -> Result<()> {
         summary.already_had
     );
 
+    if summary.in_progress > 0 {
+        println!(
+            "  {} still being written — left for a later run, so nothing is archived half-finished",
+            summary.in_progress
+        );
+    }
+
     if summary.had_failures() {
         println!("\n{} could not be archived:", summary.failures.len());
         for failure in &summary.failures {
