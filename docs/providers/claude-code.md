@@ -17,6 +17,22 @@ The project directory is the working directory with separators replaced by `-`:
 `/Users/me/Documents/Work` becomes `-Users-me-Documents-Work`. Session files are
 UUID-named JSON Lines.
 
+**That encoding cannot be reversed.** A project whose own path contains a hyphen
+is indistinguishable from one with a separator there:
+
+```text
+slug:    -Users-me-Documents-Work-ME-OPEN-SOURCE-recall
+decodes: /Users/me/Documents/Work/ME/OPEN/SOURCE/recall     wrong
+actual:  /Users/me/Documents/Work/ME/OPEN-SOURCE/recall
+```
+
+So the directory name is never trusted for the project path. Discovery reads the
+`cwd` recorded inside the session — exact, and present on every content record —
+and falls back to the decoded name only when no record supplies one. Encoding
+the project root and comparing slugs was considered and rejected: it is exact in
+one direction and ambiguous in the other, since `/w/foo-bar` and `/w/foo/bar`
+encode identically.
+
 `projects/` also holds `.json`, `.md` and `.txt` files, so discovery filters on
 extension. Assuming everything under `projects/` is a session would archive
 things that are not.
