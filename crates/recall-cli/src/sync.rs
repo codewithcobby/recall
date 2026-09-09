@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use recall_adapters::ClaudeCode;
-use recall_core::{Adapter, AdapterError, DiscoveredSession};
+use recall_core::{Adapter, AdapterError, DiscoveredSession, SessionId};
 use recall_store::{Archive, Stored};
 
 /// What one sync run did.
@@ -18,6 +18,8 @@ pub struct Summary {
     /// Sessions archived by this run.
     pub archived: usize,
     /// Sessions already in the archive.
+    ///
+    /// Recognised without reading them.
     pub already_had: usize,
     /// Sessions that could not be archived, with the reason.
     ///
@@ -80,6 +82,30 @@ fn sync_adapter(
             continue;
         }
         summary.found += 1;
+
+        // Recall's session id derives from the provider and the provider's own
+        // id, so it is knowable before anything is read. Checking here is what
+        // makes a repeat sync cheap: the alternative is parsing a transcript to
+        // discover it was already archived. This is what the discover/load
+        // split in the adapter trait was for.
+        let id = SessionId::derive(adapter.provider(), &session.provider_session_id);
+        match archive.locate(&id) {
+            Ok(Some(_)) => {
+                summary.already_had += 1;
+                continue;
+            }
+            Ok(None) => {}
+            // A broken archive is not a reason to skip the session, but it is
+            // worth reporting rather than silently re-archiving over it.
+            Err(e) => {
+                summary.failures.push(Failure {
+                    provider: adapter.provider().to_string(),
+                    provider_session_id: session.provider_session_id.clone(),
+                    reason: e.to_string(),
+                });
+                continue;
+            }
+        }
 
         match archive_one(adapter, archive, &session) {
             Ok(Stored::Written(_)) => summary.archived += 1,
