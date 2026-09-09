@@ -11,7 +11,7 @@ written down here.
 ├── config.toml                     format version and project settings
 ├── sessions/
 │   └── <YYYY>/<MM>/<DD>/
-│       └── <session-id>.zst        one archived session
+│       └── <session-id>.<ext>      one archived session
 ├── tmp/                            staging for atomic writes
 └── index.db                        derived metadata index
 ```
@@ -44,8 +44,20 @@ walks the tree by date.
 
 ## Session filenames
 
-`<session-id>.zst`, where the session id is Recall's own identifier for the
+`<session-id>.<ext>`, where the session id is Recall's own identifier for the
 session, not the provider's.
+
+**The extension names the encoding**, so a reader knows how to decode a file
+before opening it:
+
+| Extension | Contents |
+|-----------|----------|
+| `.jsonl` | JSON Lines, uncompressed |
+| `.zst` | the same JSON Lines, Zstandard-compressed (#16) |
+
+Compression arrives in #16. Until then sessions are written `.jsonl`, and
+readers accept both — which is what lets compression land without a migration
+or a format-version bump. A session is only ever stored under one of them.
 
 The provider's id goes through unchanged only if it happens to be safe, which
 cannot be assumed: provider ids may contain path separators, characters Windows
@@ -64,7 +76,12 @@ Staging a session in the system temp directory and renaming it into `sessions/`
 would silently degrade to a copy — and stop being atomic — whenever the two live
 on different mounts, which is common enough to design against.
 
-So: write to `tmp/`, fsync, rename into place. Anything left in `tmp/` is
+So: write to `tmp/`, fsync, rename into place. The fsync is not optional — a
+crash between the rename and the flush can otherwise leave a directory entry
+pointing at a file whose contents never reached disk.
+
+Staged files are named `<session-id>.<pid>.tmp`, so two Recalls writing the same
+session at once cannot corrupt each other's staging. Anything left in `tmp/` is
 wreckage from an interrupted run and may be deleted without asking.
 
 ## Format version
