@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod exit;
 mod sessions;
 mod show;
 mod sync;
@@ -23,7 +24,16 @@ use recall_store::InitOutcome;
     about = "Local memory for AI coding sessions",
     long_about = "Recall discovers and archives AI coding sessions locally, so the work \
                   done in a session outlives the session itself.\n\nNothing leaves your \
-                  machine.",
+                  machine.\n\nExit codes:\n  \
+                  0  success\n  \
+                  1  failed\n  \
+                  2  the command line could not be understood\n  \
+                  3  the command is not implemented yet\n  \
+                  4  Recall is not initialized here\n  \
+                  5  no such session\n  \
+                  6  the session id was ambiguous\n  \
+                  7  an archive is damaged or unreadable\n  \
+                  8  a file could not be read or written",
     subcommand_required = true,
     arg_required_else_help = true
 )]
@@ -79,20 +89,35 @@ impl Command {
     }
 }
 
-/// A command exists but does nothing yet.
-const EXIT_NOT_IMPLEMENTED: u8 = 3;
-/// The command failed.
-const EXIT_FAILURE: u8 = 1;
-
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // Parsed rather than `Cli::parse()` so the usage exit code is ours and
+    // documented, not whatever the argument parser happens to use. `--help` and
+    // `--version` arrive here as errors too, and they are successes.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // `--help` and `--version` are requests and succeed. Help shown
+            // *because* no command was given is a usage error: the user made a
+            // mistake, and a script must be able to tell.
+            let asked_for_it = matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
+            let _ = e.print();
+            return ExitCode::from(if asked_for_it {
+                exit::SUCCESS
+            } else {
+                exit::USAGE
+            });
+        }
+    };
 
     if let Some(issue) = cli.command.tracking_issue() {
         eprintln!(
             "recall {}: not implemented yet (tracked in #{issue})",
             cli.command.name()
         );
-        return ExitCode::from(EXIT_NOT_IMPLEMENTED);
+        return ExitCode::from(exit::NOT_IMPLEMENTED);
     }
 
     let result = match cli.command {
@@ -105,11 +130,13 @@ fn main() -> ExitCode {
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => ExitCode::from(exit::SUCCESS),
         Err(e) => {
-            // The chain matters: the top line says what failed, the causes say why.
+            // The chain matters: the top line says what failed, the causes say
+            // why. The code says which kind of failure it was, so a script can
+            // tell a typo from data loss without parsing English.
             eprintln!("error: {e:#}");
-            ExitCode::from(EXIT_FAILURE)
+            ExitCode::from(exit::code_for(&e))
         }
     }
 }

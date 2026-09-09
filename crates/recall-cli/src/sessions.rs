@@ -6,6 +6,8 @@
 use std::path::Path;
 
 use anyhow::Result;
+
+use crate::exit::Problem;
 use recall_core::SessionHeader;
 use recall_store::Archive;
 
@@ -22,11 +24,12 @@ struct Row {
 /// List archived sessions, newest first.
 pub fn list(project_root: &Path) -> Result<()> {
     let archive = Archive::open(project_root);
-    anyhow::ensure!(
-        archive.layout().root().is_dir(),
-        "Recall is not initialized in {} — run `recall init` first",
-        project_root.display()
-    );
+    if !archive.layout().root().is_dir() {
+        return Err(Problem::NotInitialized {
+            path: project_root.to_path_buf(),
+        }
+        .into());
+    }
 
     let results = archive.headers()?;
     if results.is_empty() {

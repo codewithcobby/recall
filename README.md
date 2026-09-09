@@ -274,6 +274,24 @@ recall search "authentication"
 
 Search previous AI work.
 
+### Exit codes
+
+Recall's failures are distinguishable to a script, not only readable to a
+person — "there is no such session" is a typo, while "this archive is damaged"
+is data loss, and the two deserve different reactions.
+
+| code | meaning |
+|------|---------|
+| 0 | success |
+| 1 | failed |
+| 2 | the command line could not be understood |
+| 3 | the command is not implemented yet |
+| 4 | Recall is not initialized here |
+| 5 | no such session |
+| 6 | the session id was ambiguous |
+| 7 | an archive is damaged or unreadable |
+| 8 | a file could not be read or written |
+
 The interface should remain simple enough that Recall becomes part of the normal
 development workflow rather than another system developers have to maintain.
 

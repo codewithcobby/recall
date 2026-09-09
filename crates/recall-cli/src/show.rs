@@ -3,33 +3,41 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
+
+use crate::exit::Problem;
 use recall_core::{Session, SessionEvent};
 use recall_store::Archive;
 
 /// Print an archived session.
 pub fn show(project_root: &Path, wanted: &str, metadata_only: bool) -> Result<()> {
     let archive = Archive::open(project_root);
-    anyhow::ensure!(
-        archive.layout().root().is_dir(),
-        "Recall is not initialized in {} — run `recall init` first",
-        project_root.display()
-    );
+    if !archive.layout().root().is_dir() {
+        return Err(Problem::NotInitialized {
+            path: project_root.to_path_buf(),
+        }
+        .into());
+    }
 
     let matches = archive.resolve(wanted)?;
     let id = match matches.len() {
-        0 => bail!("no archived session starts with {wanted:?} — try `recall sessions`"),
+        0 => {
+            return Err(Problem::NoSuchSession {
+                wanted: wanted.to_string(),
+            }
+            .into())
+        }
         1 => matches.into_iter().next().expect("exactly one"),
         // Showing one of several would be showing the wrong conversation some
         // of the time, which is worse than asking.
         _ => {
             let listed: Vec<_> = matches.iter().map(|id| &id.as_str()[..12]).collect();
-            bail!(
-                "{:?} matches {} sessions: {} — use more characters",
-                wanted,
-                matches.len(),
-                listed.join(", ")
-            )
+            return Err(Problem::AmbiguousSession {
+                wanted: wanted.to_string(),
+                count: matches.len(),
+                listed: listed.join(", "),
+            }
+            .into());
         }
     };
 
