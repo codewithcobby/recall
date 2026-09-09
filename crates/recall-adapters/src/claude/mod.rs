@@ -22,6 +22,7 @@ pub mod record;
 
 use std::fs;
 use std::io;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use recall_core::{Adapter, AdapterError, DiscoveredSession, Provider, Session};
@@ -139,7 +140,9 @@ impl Adapter for ClaudeCode {
                 found.push(DiscoveredSession {
                     provider_session_id: id.to_string(),
                     modified: modified_at(&entry),
-                    project: project.clone(),
+                    // The exact working directory, falling back to the lossy
+                    // one decoded from the directory name.
+                    project: recorded_project(&entry).or_else(|| project.clone()),
                     additional_paths: subagent_transcripts(&project_dir, id)?,
                     path: entry,
                 });
@@ -222,6 +225,45 @@ fn read_directory(dir: &Path) -> Result<Vec<PathBuf>, AdapterError> {
     }
     paths.sort();
     Ok(paths)
+}
+
+/// How many lines to read looking for the working directory.
+///
+/// Every content record carries `cwd`, but a session can open with Claude
+/// Code's own bookkeeping, so this reads past a reasonable number of those
+/// before giving up. Small enough that discovery stays cheap over hundreds of
+/// files.
+const CWD_SEARCH_LINES: usize = 64;
+
+/// The working directory recorded inside a session.
+///
+/// This is exact, unlike the path decoded from the directory name — which
+/// cannot round-trip a project whose own path contains a hyphen, and silently
+/// produced the wrong directory for every such project (#115).
+///
+/// Reads only the opening lines, not the transcript.
+fn recorded_project(path: &Path) -> Option<PathBuf> {
+    let file = fs::File::open(path).ok()?;
+    let reader = io::BufReader::new(file);
+
+    for line in reader.lines().take(CWD_SEARCH_LINES) {
+        let Ok(line) = line else { continue };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Deliberately not the full record type: this needs one field, and
+        // the cheapest possible read of it.
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(cwd) = value.get("cwd").and_then(|c| c.as_str()) {
+            if !cwd.is_empty() {
+                return Some(PathBuf::from(cwd));
+            }
+        }
+    }
+    None
 }
 
 /// Recover the project path from a slugified directory name.
@@ -393,6 +435,75 @@ mod tests {
             found[0].project,
             Some(PathBuf::from("/Users/me/Documents/Work"))
         );
+    }
+
+    #[test]
+    fn the_project_path_comes_from_the_session_not_the_directory_name() {
+        // The decoded slug cannot round-trip a path containing a hyphen. Before
+        // this, every project whose own path had one was silently skipped by
+        // sync: discovery reported the wrong directory and nothing matched.
+        let home = claude_home();
+        session_file(
+            home.path(),
+            "-Users-me-OPEN-SOURCE-recall",
+            "abc",
+            "{\"type\":\"user\",\"cwd\":\"/Users/me/OPEN-SOURCE/recall\",\"message\":{\"content\":\"x\"}}\n",
+        );
+
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        assert_eq!(
+            found[0].project,
+            Some(PathBuf::from("/Users/me/OPEN-SOURCE/recall")),
+            "the lossy directory name was used instead of the recorded cwd"
+        );
+    }
+
+    #[test]
+    fn the_directory_name_is_used_when_no_record_supplies_a_cwd() {
+        let home = claude_home();
+        session_file(
+            home.path(),
+            "-Users-me-plain",
+            "abc",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"x\"}\n",
+        );
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        assert_eq!(found[0].project, Some(PathBuf::from("/Users/me/plain")));
+    }
+
+    #[test]
+    fn a_cwd_is_found_past_leading_bookkeeping_records() {
+        let home = claude_home();
+        let mut lines = String::new();
+        for _ in 0..20 {
+            lines.push_str("{\"type\":\"mode\",\"mode\":\"normal\"}\n");
+        }
+        lines.push_str("{\"type\":\"user\",\"cwd\":\"/w/real\",\"message\":{\"content\":\"x\"}}\n");
+        session_file(home.path(), "-w-real", "abc", &lines);
+
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        assert_eq!(found[0].project, Some(PathBuf::from("/w/real")));
+    }
+
+    #[test]
+    fn an_unparseable_opening_line_does_not_stop_the_search() {
+        let home = claude_home();
+        session_file(
+            home.path(),
+            "-w-real",
+            "abc",
+            "{not json at all\n{\"type\":\"user\",\"cwd\":\"/w/real\",\"message\":{\"content\":\"x\"}}\n",
+        );
+        let found = ClaudeCode::rooted_at(home.path())
+            .discover()
+            .expect("discover");
+        assert_eq!(found[0].project, Some(PathBuf::from("/w/real")));
     }
 
     #[test]

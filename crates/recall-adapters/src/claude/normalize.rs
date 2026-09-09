@@ -49,12 +49,22 @@ pub fn normalize(
                 }
             }
             if branch.is_none() {
-                if let Some(b) = record.git_branch.as_deref().filter(|b| !b.is_empty()) {
+                if let Some(b) = record.git_branch.as_deref().filter(|b| is_branch_name(b)) {
                     branch = Some(b.to_string());
                 }
             }
-            if let Some(m) = record.message.as_ref().and_then(|m| m.model.as_deref()) {
-                model = Some(m.to_string());
+            // First real model wins. Claude Code writes placeholders in this
+            // field for messages it generated itself, and a placeholder
+            // arriving after a real identifier would otherwise overwrite it.
+            if model.is_none() {
+                if let Some(m) = record
+                    .message
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref())
+                    .filter(|m| is_real_model(m))
+                {
+                    model = Some(m.to_string());
+                }
             }
 
             for event in events_from(record, at) {
@@ -309,6 +319,36 @@ fn value_as_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Whether this names a branch rather than the absence of one.
+///
+/// Claude Code records `HEAD` when the repository is on a detached HEAD —
+/// mid-rebase, on a checked-out tag, in some worktree states. It is not a
+/// branch name, and storing it as one collapses every detached session across
+/// every project into a single meaningless group, which breaks the question the
+/// README promises to answer: *which AI session worked on this branch?*
+///
+/// The commit is what would identify such a session, and Claude Code does not
+/// record it. So the honest answer is that the branch is unknown. #31 derives
+/// git state from the repository itself and should treat detached HEAD the same
+/// way.
+fn is_branch_name(branch: &str) -> bool {
+    !branch.is_empty() && branch != "HEAD"
+}
+
+/// Whether this names a model rather than marking the absence of one.
+///
+/// Claude Code writes `<synthetic>` on messages it produced itself — an
+/// interrupted turn, an injected notice — rather than obtained from the API.
+/// Archiving that as the session's model stores something that looks like a
+/// value and matches no model that exists, which is worse than absence:
+/// listings, the index (#34) and search would all carry it.
+///
+/// The angle brackets are the tell, so treating the shape as the marker rather
+/// than one exact string handles a new placeholder without a code change.
+fn is_real_model(model: &str) -> bool {
+    !model.is_empty() && !(model.starts_with('<') && model.ends_with('>'))
+}
+
 /// Claude Code writes ISO-8601 with a `Z`.
 fn parse_timestamp(text: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(text, &Rfc3339).ok()
@@ -350,6 +390,86 @@ mod tests {
             Some("dev")
         );
         assert_eq!(s.duration().map(|d| d.whole_minutes()), Some(90));
+    }
+
+    #[test]
+    fn a_synthetic_model_placeholder_is_not_a_model() {
+        // Claude Code writes this for messages it generated itself. Archiving
+        // it would store a value matching no model that exists.
+        let s = session_from(&format!(
+            r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"<synthetic>","content":[{{"type":"text","text":"x"}}]}}}}"#
+        ));
+        assert_eq!(s.model, None);
+    }
+
+    #[test]
+    fn a_real_model_is_not_overwritten_by_a_later_placeholder() {
+        // The exact ordering that produced the bug.
+        let s = session_from(&format!(
+            r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"claude-opus-5","content":[{{"type":"text","text":"a"}}]}}}}
+{{"type":"assistant","timestamp":"{AT}","message":{{"model":"<synthetic>","content":[{{"type":"text","text":"b"}}]}}}}"#
+        ));
+        assert_eq!(s.model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn a_placeholder_before_a_real_model_does_not_win_either() {
+        let s = session_from(&format!(
+            r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"<synthetic>","content":[{{"type":"text","text":"a"}}]}}}}
+{{"type":"assistant","timestamp":"{AT}","message":{{"model":"claude-opus-5","content":[{{"type":"text","text":"b"}}]}}}}"#
+        ));
+        assert_eq!(s.model.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn any_bracketed_placeholder_is_treated_as_absence() {
+        for placeholder in ["<synthetic>", "<none>", "<unknown>", ""] {
+            let s = session_from(&format!(
+                r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"{placeholder}","content":[{{"type":"text","text":"x"}}]}}}}"#
+            ));
+            assert_eq!(s.model, None, "{placeholder:?} was archived as a model");
+        }
+    }
+
+    #[test]
+    fn a_detached_head_is_not_a_branch() {
+        // Six of the eleven sessions in the archive that exposed this recorded
+        // "HEAD". Storing it collapses every detached session everywhere into
+        // one group that answers no useful question.
+        let s = session_from(&format!(
+            r#"{{"type":"user","timestamp":"{AT}","gitBranch":"HEAD","message":{{"content":"x"}}}}"#
+        ));
+        assert_eq!(s.git.and_then(|g| g.branch), None);
+    }
+
+    #[test]
+    fn a_real_branch_after_a_detached_head_is_still_found() {
+        // A session that starts detached and ends on a branch - a rebase
+        // finishing, say - should record the branch.
+        let s = session_from(&format!(
+            r#"{{"type":"user","timestamp":"{AT}","gitBranch":"HEAD","message":{{"content":"a"}}}}
+{{"type":"user","timestamp":"{AT}","gitBranch":"fix/312-vendor-order","message":{{"content":"b"}}}}"#
+        ));
+        assert_eq!(
+            s.git.and_then(|g| g.branch).as_deref(),
+            Some("fix/312-vendor-order")
+        );
+    }
+
+    #[test]
+    fn a_branch_that_merely_contains_head_is_kept() {
+        // "HEAD" exactly is the marker. A branch called head-refactor is a
+        // branch.
+        for name in ["head-refactor", "feature/HEADer", "HEADS"] {
+            let s = session_from(&format!(
+                r#"{{"type":"user","timestamp":"{AT}","gitBranch":"{name}","message":{{"content":"x"}}}}"#
+            ));
+            assert_eq!(
+                s.git.and_then(|g| g.branch).as_deref(),
+                Some(name),
+                "{name} was discarded"
+            );
+        }
     }
 
     #[test]

@@ -17,6 +17,22 @@ The project directory is the working directory with separators replaced by `-`:
 `/Users/me/Documents/Work` becomes `-Users-me-Documents-Work`. Session files are
 UUID-named JSON Lines.
 
+**That encoding cannot be reversed.** A project whose own path contains a hyphen
+is indistinguishable from one with a separator there:
+
+```text
+slug:    -Users-me-Documents-Work-ME-OPEN-SOURCE-recall
+decodes: /Users/me/Documents/Work/ME/OPEN/SOURCE/recall     wrong
+actual:  /Users/me/Documents/Work/ME/OPEN-SOURCE/recall
+```
+
+So the directory name is never trusted for the project path. Discovery reads the
+`cwd` recorded inside the session — exact, and present on every content record —
+and falls back to the decoded name only when no record supplies one. Encoding
+the project root and comparing slugs was considered and rejected: it is exact in
+one direction and ambiguous in the other, since `/w/foo-bar` and `/w/foo/bar`
+encode identically.
+
 `projects/` also holds `.json`, `.md` and `.txt` files, so discovery filters on
 extension. Assuming everything under `projects/` is a session would archive
 things that are not.
@@ -72,6 +88,12 @@ Two are better than expected: **`cwd` and `gitBranch` are present on 100% of the
 83,343 content records examined**, so the adapter supplies the project path and
 the branch directly rather than leaving them to be derived from the repository.
 
+`gitBranch` is `HEAD` when the repository is on a detached HEAD — mid-rebase, on
+a checked-out tag, in some worktree states. That is not a branch name, and six
+of eleven sessions in one real archive carried it. Recording it as a branch
+collapses every detached session across every project into one meaningless
+group, so it is treated as absence.
+
 `parentUuid` means records form a tree rather than a flat list. `isSidechain`
 marks sub-agent conversations — none appeared in this sample, but the field
 exists and is worth preserving.
@@ -91,7 +113,12 @@ shape will silently drop the other.
 
 `tool_result.content` is string-or-array as well.
 
-`message.model` on `assistant` records is the model identifier.
+`message.model` on `assistant` records is the model identifier — except when it
+is not. Claude Code writes `<synthetic>` there for messages it generated itself
+rather than obtained from the API: interrupted turns, injected notices. That is
+a marker, not a model, and archiving it would store a value matching nothing
+that exists. Placeholders are recognised by their angle brackets, so a new one
+needs no code change.
 
 ### Extended thinking
 
