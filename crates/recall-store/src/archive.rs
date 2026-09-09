@@ -8,12 +8,12 @@
 //! Reading lands in #14; the failure modes in #15.
 
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use recall_core::{FormatError, Session, SessionId};
 
-use crate::layout::Layout;
+use crate::layout::{Layout, COMPRESSED_SESSION_EXTENSION, SESSION_EXTENSION};
 
 /// Why an archive operation could not complete.
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +52,43 @@ pub enum ArchiveError {
         #[source]
         source: FormatError,
     },
+
+    /// No archive exists for that id.
+    #[error("no archived session with id {id}")]
+    NotFound { id: SessionId },
+
+    /// The archive exists but could not be read.
+    #[error("could not read the archive for session {id} at {}", .path.display())]
+    Read {
+        id: SessionId,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// The archive exists but its contents are not a session.
+    ///
+    /// Never silently treated as an empty or partial session — see
+    /// `.github/SECURITY.md`.
+    #[error("the archive for session {id} at {} is not readable as a session", .path.display())]
+    Decode {
+        id: SessionId,
+        path: PathBuf,
+        #[source]
+        source: FormatError,
+    },
+
+    /// A directory could not be listed while looking for a session.
+    #[error("could not search {}", .path.display())]
+    Search {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// Recall does not know how to decode this file.
+    #[error("the archive for session {id} at {} has an unrecognised extension", .path.display())]
+    UnknownEncoding { id: SessionId, path: PathBuf },
 }
 
 /// What a write did.
@@ -147,6 +184,74 @@ impl Archive {
         Ok(Stored::Written(destination))
     }
 
+    /// Find the archive for a session id.
+    ///
+    /// The id does not encode the date, so this walks the day directories and
+    /// checks for a matching filename. It reads directory entries only, never
+    /// file contents, so the cost is the number of day directories rather than
+    /// the number of sessions. #36 replaces this with an index lookup.
+    pub fn locate(&self, id: &SessionId) -> Result<Option<PathBuf>, ArchiveError> {
+        for extension in [SESSION_EXTENSION, COMPRESSED_SESSION_EXTENSION] {
+            let name = format!("{id}.{extension}");
+            for day in self.day_directories()? {
+                let candidate = day.join(&name);
+                if candidate.is_file() {
+                    return Ok(Some(candidate));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read an archived session back.
+    pub fn read(&self, id: &SessionId) -> Result<Session, ArchiveError> {
+        let path = self
+            .locate(id)?
+            .ok_or_else(|| ArchiveError::NotFound { id: id.clone() })?;
+        self.read_at(id, &path)
+    }
+
+    /// Read a session from a known path.
+    fn read_at(&self, id: &SessionId, path: &Path) -> Result<Session, ArchiveError> {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(SESSION_EXTENSION) => {}
+            // Decoding these arrives with compression in #17.
+            _ => {
+                return Err(ArchiveError::UnknownEncoding {
+                    id: id.clone(),
+                    path: path.to_path_buf(),
+                })
+            }
+        }
+
+        let file = File::open(path).map_err(|source| ArchiveError::Read {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        recall_core::read_session(BufReader::new(file)).map_err(|source| ArchiveError::Decode {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Every `YYYY/MM/DD` directory holding archives, in order.
+    ///
+    /// Entries that are not shaped like the layout are skipped rather than
+    /// erroring: `.recall/sessions/` may contain files Recall does not own, and
+    /// those belong to whoever put them there.
+    fn day_directories(&self) -> Result<Vec<PathBuf>, ArchiveError> {
+        let mut days = Vec::new();
+        for year in sorted_subdirectories(&self.layout.sessions())? {
+            for month in sorted_subdirectories(&year)? {
+                days.extend(sorted_subdirectories(&month)?);
+            }
+        }
+        Ok(days)
+    }
+
     /// Encode a session into `.recall/tmp` and return the staged path.
     fn stage(&self, session: &Session) -> Result<PathBuf, ArchiveError> {
         let tmp = self.layout.tmp();
@@ -187,6 +292,33 @@ impl Archive {
 
         Ok(staged)
     }
+}
+
+/// Subdirectories of `dir`, sorted, or an empty list if `dir` does not exist.
+fn sorted_subdirectories(dir: &Path) -> Result<Vec<PathBuf>, ArchiveError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(ArchiveError::Search {
+                path: dir.to_path_buf(),
+                source,
+            })
+        }
+    };
+
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| ArchiveError::Search {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        if entry.path().is_dir() {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// Create a directory and its parents, owner-readable only.
@@ -389,6 +521,150 @@ mod tests {
             recall_core::read_session(text.as_bytes()).expect("decode"),
             s
         );
+    }
+
+    #[test]
+    fn a_session_reads_back_exactly_as_written() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        let s = session("abc");
+        archive.write(&s).expect("write");
+
+        assert_eq!(archive.read(&s.id).expect("read"), s);
+    }
+
+    #[test]
+    fn every_event_variant_survives_the_archive() {
+        use recall_core::FileAction;
+        let p = project();
+        let archive = Archive::open(p.path());
+        let mut s = session("abc");
+        s.model = Some("claude-opus-5".into());
+        s.ended_at = Some(datetime!(2026-09-08 14:30:00 UTC));
+        s.project = Some("/home/me/project".into());
+        s.events = vec![
+            SessionEvent::UserMessage {
+                at: Some(datetime!(2026-09-08 12:00:05 UTC)),
+                content: "line one\nline two".into(),
+            },
+            SessionEvent::AssistantMessage {
+                at: None,
+                content: "unicode 日本語 🧠".into(),
+            },
+            SessionEvent::ToolCall {
+                at: None,
+                name: "read_file".into(),
+                arguments: Some(r#"{"path":"src/lib.rs"}"#.into()),
+                call_id: Some("call-1".into()),
+            },
+            SessionEvent::ToolResult {
+                at: None,
+                call_id: Some("call-1".into()),
+                content: "x".repeat(100_000),
+                failed: Some(false),
+            },
+            SessionEvent::Command {
+                at: None,
+                command: "cargo test".into(),
+                exit_code: Some(0),
+                output: None,
+            },
+            SessionEvent::FileChange {
+                at: None,
+                action: FileAction::Deleted,
+                path: "../../../../etc/passwd".into(),
+            },
+            SessionEvent::Other {
+                at: None,
+                provider_kind: "system_prompt".into(),
+                content: "be concise".into(),
+            },
+        ];
+        archive.write(&s).expect("write");
+        assert_eq!(archive.read(&s.id).expect("read"), s);
+    }
+
+    #[test]
+    fn a_session_is_found_whatever_day_it_was_filed_under() {
+        let p = project();
+        let archive = Archive::open(p.path());
+
+        // Spread across years, months and days so the walk has to work.
+        let dates = [
+            datetime!(2024-01-01 00:00:00 UTC),
+            datetime!(2025-06-15 12:00:00 UTC),
+            datetime!(2026-09-08 23:59:59 UTC),
+        ];
+        let mut written = Vec::new();
+        for (i, at) in dates.iter().enumerate() {
+            let s = Session::new(
+                Provider::new("claude-code").expect("provider"),
+                format!("session-{i}"),
+                *at,
+            );
+            archive.write(&s).expect("write");
+            written.push(s);
+        }
+
+        for s in &written {
+            assert_eq!(archive.read(&s.id).expect("read").id, s.id);
+        }
+    }
+
+    #[test]
+    fn an_unknown_id_is_reported_as_missing() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        archive.write(&session("abc")).expect("write");
+
+        let absent = session("never-archived").id;
+        assert!(archive.locate(&absent).expect("locate").is_none());
+        assert!(matches!(
+            archive.read(&absent),
+            Err(ArchiveError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn an_empty_archive_is_searchable_without_error() {
+        let p = project();
+        let archive = Archive::open(p.path());
+        assert!(archive
+            .locate(&session("abc").id)
+            .expect("locate")
+            .is_none());
+    }
+
+    #[test]
+    fn locate_reads_directory_entries_not_archives() {
+        // The cost is the number of day directories, not the number of
+        // sessions. A thousand sessions in one day must not mean a thousand
+        // file reads to find one.
+        let p = project();
+        let archive = Archive::open(p.path());
+        for i in 0..200 {
+            archive.write(&session(&format!("s{i}"))).expect("write");
+        }
+        let target = session("s150");
+        let found = archive
+            .locate(&target.id)
+            .expect("locate")
+            .expect("present");
+        assert!(found.ends_with(format!("{}.jsonl", target.id)));
+    }
+
+    #[test]
+    fn files_recall_does_not_own_are_ignored_while_searching() {
+        // .recall/sessions may contain things Recall did not put there.
+        let p = project();
+        let archive = Archive::open(p.path());
+        let s = session("abc");
+        archive.write(&s).expect("write");
+
+        fs::write(archive.layout().sessions().join("notes.md"), b"mine").expect("write");
+        fs::create_dir_all(archive.layout().sessions().join("scratch/deep")).expect("mkdir");
+
+        assert_eq!(archive.read(&s.id).expect("read"), s);
     }
 
     #[cfg(unix)]
