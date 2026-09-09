@@ -49,7 +49,7 @@ pub fn normalize(
                 }
             }
             if branch.is_none() {
-                if let Some(b) = record.git_branch.as_deref().filter(|b| !b.is_empty()) {
+                if let Some(b) = record.git_branch.as_deref().filter(|b| is_branch_name(b)) {
                     branch = Some(b.to_string());
                 }
             }
@@ -319,6 +319,22 @@ fn value_as_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Whether this names a branch rather than the absence of one.
+///
+/// Claude Code records `HEAD` when the repository is on a detached HEAD —
+/// mid-rebase, on a checked-out tag, in some worktree states. It is not a
+/// branch name, and storing it as one collapses every detached session across
+/// every project into a single meaningless group, which breaks the question the
+/// README promises to answer: *which AI session worked on this branch?*
+///
+/// The commit is what would identify such a session, and Claude Code does not
+/// record it. So the honest answer is that the branch is unknown. #31 derives
+/// git state from the repository itself and should treat detached HEAD the same
+/// way.
+fn is_branch_name(branch: &str) -> bool {
+    !branch.is_empty() && branch != "HEAD"
+}
+
 /// Whether this names a model rather than marking the absence of one.
 ///
 /// Claude Code writes `<synthetic>` on messages it produced itself — an
@@ -412,6 +428,47 @@ mod tests {
                 r#"{{"type":"assistant","timestamp":"{AT}","message":{{"model":"{placeholder}","content":[{{"type":"text","text":"x"}}]}}}}"#
             ));
             assert_eq!(s.model, None, "{placeholder:?} was archived as a model");
+        }
+    }
+
+    #[test]
+    fn a_detached_head_is_not_a_branch() {
+        // Six of the eleven sessions in the archive that exposed this recorded
+        // "HEAD". Storing it collapses every detached session everywhere into
+        // one group that answers no useful question.
+        let s = session_from(&format!(
+            r#"{{"type":"user","timestamp":"{AT}","gitBranch":"HEAD","message":{{"content":"x"}}}}"#
+        ));
+        assert_eq!(s.git.and_then(|g| g.branch), None);
+    }
+
+    #[test]
+    fn a_real_branch_after_a_detached_head_is_still_found() {
+        // A session that starts detached and ends on a branch - a rebase
+        // finishing, say - should record the branch.
+        let s = session_from(&format!(
+            r#"{{"type":"user","timestamp":"{AT}","gitBranch":"HEAD","message":{{"content":"a"}}}}
+{{"type":"user","timestamp":"{AT}","gitBranch":"fix/312-vendor-order","message":{{"content":"b"}}}}"#
+        ));
+        assert_eq!(
+            s.git.and_then(|g| g.branch).as_deref(),
+            Some("fix/312-vendor-order")
+        );
+    }
+
+    #[test]
+    fn a_branch_that_merely_contains_head_is_kept() {
+        // "HEAD" exactly is the marker. A branch called head-refactor is a
+        // branch.
+        for name in ["head-refactor", "feature/HEADer", "HEADS"] {
+            let s = session_from(&format!(
+                r#"{{"type":"user","timestamp":"{AT}","gitBranch":"{name}","message":{{"content":"x"}}}}"#
+            ));
+            assert_eq!(
+                s.git.and_then(|g| g.branch).as_deref(),
+                Some(name),
+                "{name} was discarded"
+            );
         }
     }
 

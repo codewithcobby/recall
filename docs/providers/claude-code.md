@@ -88,6 +88,12 @@ Two are better than expected: **`cwd` and `gitBranch` are present on 100% of the
 83,343 content records examined**, so the adapter supplies the project path and
 the branch directly rather than leaving them to be derived from the repository.
 
+`gitBranch` is `HEAD` when the repository is on a detached HEAD — mid-rebase, on
+a checked-out tag, in some worktree states. That is not a branch name, and six
+of eleven sessions in one real archive carried it. Recording it as a branch
+collapses every detached session across every project into one meaningless
+group, so it is treated as absence.
+
 `parentUuid` means records form a tree rather than a flat list. `isSidechain`
 marks sub-agent conversations — none appeared in this sample, but the field
 exists and is worth preserving.
