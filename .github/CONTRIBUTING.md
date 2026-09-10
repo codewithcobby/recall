@@ -330,8 +330,19 @@ format questions there before implementing.
 
 ### Merge strategy
 
-- Into `dev`: **squash merge**.
-- `dev` into `main` for a release: **merge commit**, to preserve history.
+| Merging | Method |
+| ------------------------------ | ------------------ |
+| A single pull request into `dev` | **Squash merge**   |
+| A pull request inside a stack    | **Merge commit**   |
+| `dev` into `main` for a release  | **Merge commit**   |
+
+A stack is the exception for a mechanical reason: squashing the bottom pull request
+replaces its commits with a new one, so every branch above it is left sitting on commits
+that no longer exist and has to be rebased before it can merge. Merging the stack with
+merge commits keeps each branch valid, which is what lets the layers land in order.
+
+Releases use a merge commit so `main` keeps the history of what went into each phase.
+
 - Branch is deleted after merge.
 - Contributors never merge their own pull requests unless a maintainer says to.
 
@@ -375,9 +386,10 @@ the stack by dependency — shared groundwork at the bottom. Every branch still 
 naming convention, every pull request still references its own issue, and validation runs
 before `gh stack submit`.
 
-After anything in the stack merges, run `gh stack sync` before continuing. Exit code 9
-means stacked pull requests are not enabled for this repository — report it rather than
-falling back to another tool.
+Merge a stack bottom-up, with **merge commits** rather than squashing — see
+[Merge strategy](#merge-strategy) for why. After anything in the stack merges, run
+`gh stack sync` before continuing. Exit code 9 means stacked pull requests are not enabled
+for this repository — report it rather than falling back to another tool.
 
 ---
 

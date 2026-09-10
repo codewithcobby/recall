@@ -9,12 +9,16 @@ use std::process::ExitCode;
 
 mod exit;
 mod indexing;
+mod out;
+mod search;
 mod sessions;
 mod show;
 mod sync;
 mod verify;
 
 use anyhow::{Context, Result};
+
+use crate::out::outln;
 use clap::{Parser, Subcommand};
 use recall_store::InitOutcome;
 
@@ -78,9 +82,22 @@ enum Command {
         session: Option<String>,
     },
     /// Search archived sessions.
+    ///
+    /// Matches literal text in the transcripts: terms are combined with "and",
+    /// quotes group words into a phrase, and case is ignored. There are no
+    /// wildcards and no regular expressions, so a query means exactly what it
+    /// says.
+    ///
+    /// Reads the archives rather than the index, so it works even when
+    /// `.recall/index.db` has been deleted.
     Search {
         /// What to look for.
-        query: String,
+        ///
+        /// Several words can be given without quoting — `recall search retry
+        /// backoff` is the same as `recall search "retry backoff"`. Quote a
+        /// phrase when you want those words in that order.
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
     },
 }
 
@@ -93,7 +110,7 @@ impl Command {
             Command::Sessions { .. } => None,
             Command::Show { .. } => None,
             Command::Verify { .. } => None,
-            Command::Search { .. } => Some(38),
+            Command::Search { .. } => None,
         }
     }
 
@@ -146,12 +163,16 @@ fn main() -> ExitCode {
         Command::Sessions { rebuild } => run_sessions(rebuild),
         Command::Show { session, summary } => run_show(&session, summary),
         Command::Verify { session } => run_verify(session.as_deref()),
-        // Every other command returned above.
-        _ => unreachable!("handled by the tracking-issue branch"),
+        Command::Search { query } => run_search(&query.join(" ")),
     };
 
     match result {
         Ok(()) => ExitCode::from(exit::SUCCESS),
+        // `recall show` writes through `?`, so a reader that stopped reading
+        // arrives here as an ordinary error. It is not one: everything asked
+        // for was delivered. Reported as a failure it would print
+        // "error: Broken pipe (os error 32)" and exit non-zero for `| head`.
+        Err(e) if out::is_closed_pipe(&e) => ExitCode::from(exit::SUCCESS),
         Err(e) => {
             // The chain matters: the top line says what failed, the causes say
             // why. The code says which kind of failure it was, so a script can
@@ -169,6 +190,13 @@ fn run_sessions(rebuild: bool) -> Result<()> {
     sessions::list(&project_root, rebuild)
 }
 
+/// `recall search`
+fn run_search(query: &str) -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    search::search(&project_root, query)
+}
+
 /// `recall show`
 fn run_show(session: &str, summary: bool) -> Result<()> {
     let project_root =
@@ -183,11 +211,11 @@ fn run_verify(session: Option<&str>) -> Result<()> {
     let report = verify::verify(&project_root, session)?;
 
     if report.checked() == 0 {
-        println!("No sessions archived yet — run `recall sync`");
+        outln!("No sessions archived yet — run `recall sync`");
         return Ok(());
     }
 
-    println!(
+    outln!(
         "{} session{} checked: {} readable, {} damaged",
         report.checked(),
         if report.checked() == 1 { "" } else { "s" },
@@ -199,9 +227,9 @@ fn run_verify(session: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    println!();
+    outln!();
     for damaged in &report.damaged {
-        println!("  {}  {}", damaged.id, damaged.reason);
+        outln!("  {}  {}", damaged.id, damaged.reason);
     }
 
     // A damaged archive is data loss, and a script should be able to notice
@@ -219,11 +247,11 @@ fn run_sync() -> Result<()> {
     let summary = sync::sync(&project_root)?;
 
     if summary.found == 0 {
-        println!("No AI sessions found for {}", project_root.display());
+        outln!("No AI sessions found for {}", project_root.display());
         return Ok(());
     }
 
-    println!(
+    outln!(
         "{} session{} found: {} archived, {} already had",
         summary.found,
         if summary.found == 1 { "" } else { "s" },
@@ -232,18 +260,20 @@ fn run_sync() -> Result<()> {
     );
 
     if summary.in_progress > 0 {
-        println!(
+        outln!(
             "  {} still being written — left for a later run, so nothing is archived half-finished",
             summary.in_progress
         );
     }
 
     if summary.had_failures() {
-        println!("\n{} could not be archived:", summary.failures.len());
+        outln!("\n{} could not be archived:", summary.failures.len());
         for failure in &summary.failures {
-            println!(
+            outln!(
                 "  {} {}: {}",
-                failure.provider, failure.provider_session_id, failure.reason
+                failure.provider,
+                failure.provider_session_id,
+                failure.reason
             );
         }
     }
@@ -252,8 +282,8 @@ fn run_sync() -> Result<()> {
     // what is missing is the shortcut for finding it again, and the next sync
     // notices and repairs it.
     if let Some(problem) = &summary.index_problem {
-        println!("\nThe index could not be brought up to date: {problem}");
-        println!("  Archived sessions are unaffected. The next sync will retry.");
+        outln!("\nThe index could not be brought up to date: {problem}");
+        outln!("  Archived sessions are unaffected. The next sync will retry.");
     }
     Ok(())
 }
@@ -286,22 +316,22 @@ fn report(outcome: &InitOutcome, project_root: &Path) {
 
     if outcome.created_anything() {
         if started_fresh {
-            println!("Initialized Recall in {}", outcome.root.display());
+            outln!("Initialized Recall in {}", outcome.root.display());
         } else {
-            println!("Completed Recall setup in {}", outcome.root.display());
+            outln!("Completed Recall setup in {}", outcome.root.display());
         }
         for path in &outcome.created {
-            println!("  created {}", shown(path));
+            outln!("  created {}", shown(path));
         }
     } else {
-        println!(
+        outln!(
             "Recall is already initialized in {}",
             outcome.root.display()
         );
     }
 
     if !outcome.unrecognized.is_empty() {
-        println!(
+        outln!(
             "\nLeft alone ({} not owned by Recall):",
             if outcome.unrecognized.len() == 1 {
                 "1 entry"
@@ -310,7 +340,7 @@ fn report(outcome: &InitOutcome, project_root: &Path) {
             }
         );
         for name in &outcome.unrecognized {
-            println!("  {name}");
+            outln!("  {name}");
         }
     }
 
@@ -318,7 +348,7 @@ fn report(outcome: &InitOutcome, project_root: &Path) {
     // `recall init` is noise, and the suggestion has already been made.
     if outcome.created_anything() {
         if let Some(hint) = gitignore_hint(project_root) {
-            println!("\n{hint}");
+            outln!("\n{hint}");
         }
     }
 }

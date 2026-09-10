@@ -49,6 +49,9 @@ pub enum Problem {
 
     #[error("{count} archive{} could not be read", if *.count == 1 { "" } else { "s" })]
     ArchivesDamaged { count: usize },
+
+    #[error("nothing to search for — give `recall search` something to look for")]
+    EmptyQuery,
 }
 
 impl Problem {
@@ -60,6 +63,10 @@ impl Problem {
             Problem::AmbiguousSession { .. } => AMBIGUOUS,
             // Data loss, and a script should notice without reading English.
             Problem::ArchivesDamaged { .. } => DAMAGED,
+            // The command line did not say what to search for. That is the
+            // argument parser's category of problem, even though it is caught
+            // just after parsing rather than during it.
+            Problem::EmptyQuery => USAGE,
         }
     }
 }
