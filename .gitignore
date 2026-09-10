@@ -27,6 +27,11 @@ target/
 .idea/
 .vscode/
 
+# Claude Code's per-project state. Agent worktrees are created under
+# .claude/worktrees/, which is a full checkout of this repository nested inside
+# it — exactly the thing a `git add -A` should never sweep up.
+.claude/
+
 # Credentials. SECURITY.md treats a secret reaching the repository as an
 # incident. This is the last line of defence, not the first.
 .env

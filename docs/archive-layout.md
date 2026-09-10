@@ -131,7 +131,8 @@ Windows inherits the parent ACL; matching this guarantee there is tracked in #62
 ## What survives losing a file
 
 - **`index.db` deleted** — nothing is lost. It is derived and rebuilt from the
-  archives. This is what keeps the index a cache rather than a second source of
+  archives, and [`index-and-archive.md`](index-and-archive.md) states the rules
+  that keep it that way. This is what keeps the index a cache rather than a second source of
   truth.
 - **`config.toml` deleted** — the format version is unknown, so Recall stops
   rather than assuming the current one.
