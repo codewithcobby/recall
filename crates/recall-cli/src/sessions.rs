@@ -28,6 +28,7 @@ use anyhow::Result;
 
 use crate::exit::Problem;
 use crate::indexing;
+use crate::out::outln;
 use recall_index::IndexedSession;
 use recall_store::Archive;
 
@@ -61,35 +62,35 @@ pub fn list(project_root: &Path, force_rebuild: bool) -> Result<()> {
 
     if force_rebuild || replaced || empty_but_archives_exist {
         if !force_rebuild {
-            println!("The index is out of date — rebuilding it from the archives.");
+            outln!("The index is out of date — rebuilding it from the archives.");
         }
         let rebuilt = indexing::rebuild(&archive, &mut index)?;
         if force_rebuild {
-            println!(
+            outln!(
                 "Rebuilt the index from {} archive{}.\n",
                 rebuilt.indexed,
                 if rebuilt.indexed == 1 { "" } else { "s" }
             );
         }
         if !rebuilt.unreadable.is_empty() {
-            println!("{} could not be read:", rebuilt.unreadable.len());
+            outln!("{} could not be read:", rebuilt.unreadable.len());
             for reason in &rebuilt.unreadable {
-                println!("  {reason}");
+                outln!("  {reason}");
             }
-            println!();
+            outln!();
         }
     }
 
     let sessions = index.list()?;
     if sessions.is_empty() {
-        println!("No sessions archived yet — run `recall sync`");
+        outln!("No sessions archived yet — run `recall sync`");
         return Ok(());
     }
 
     let rows: Vec<Row> = sessions.iter().map(row).collect();
     print_table(&rows);
 
-    println!(
+    outln!(
         "\n{} session{}",
         sessions.len(),
         if sessions.len() == 1 { "" } else { "s" }
@@ -138,7 +139,7 @@ fn print_table(rows: &[Row]) {
     let w_provider = width("PROVIDER", |r| &r.provider);
     let w_model = width("MODEL", |r| &r.model);
 
-    println!(
+    outln!(
         "{id:<w_id$}  {started:<w_started$}  {events:>w_events$}  \
          {provider:<w_provider$}  {model:<w_model$}  BRANCH",
         id = "ID",
@@ -148,9 +149,14 @@ fn print_table(rows: &[Row]) {
         model = "MODEL",
     );
     for r in rows {
-        println!(
+        outln!(
             "{:<w_id$}  {:<w_started$}  {:>w_events$}  {:<w_provider$}  {:<w_model$}  {}",
-            r.id, r.started, r.events, r.provider, r.model, r.branch
+            r.id,
+            r.started,
+            r.events,
+            r.provider,
+            r.model,
+            r.branch
         );
     }
 }
