@@ -104,6 +104,43 @@ pub fn header_of(archive: &Archive, id: &SessionId) -> Option<SessionHeader> {
     archive.stream(id).ok().map(|s| s.header().clone())
 }
 
+/// What a rebuild did.
+pub struct Rebuilt {
+    /// Sessions now in the index.
+    pub indexed: usize,
+    /// Archives that could not be read, with the reason.
+    ///
+    /// A rebuild is the one moment the whole archive is opened, so it is also
+    /// the moment a damaged archive is noticed. Reported rather than dropped —
+    /// silently indexing four of five sessions would make the missing one look
+    /// like it was never there.
+    pub unreadable: Vec<String>,
+}
+
+/// Rebuild the index from the archives.
+///
+/// This is what makes the database disposable. It reads one line per archive,
+/// not whole transcripts, and replaces the index's contents in a single
+/// transaction — so a rebuild that fails partway leaves what was there before
+/// rather than an empty index.
+pub fn rebuild(archive: &Archive, index: &mut Index) -> anyhow::Result<Rebuilt> {
+    let mut rows = Vec::new();
+    let mut unreadable = Vec::new();
+
+    for (entry, header) in archive.headers_with_paths()? {
+        match header {
+            Ok(header) => rows.push(row(header, archive, &entry.path)),
+            Err(e) => unreadable.push(format!("{} {e}", &entry.id.as_str()[..8])),
+        }
+    }
+
+    let indexed = index.replace_all(&rows)?;
+    Ok(Rebuilt {
+        indexed,
+        unreadable,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
