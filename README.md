@@ -346,18 +346,19 @@ crates/
 ├── recall-cli/        Binary. Argument parsing, output rendering, exit codes.
 ├── recall-core/       Normalized session model and the capture pipeline's contracts.
 ├── recall-adapters/   One module per AI coding agent. Discovery and parsing only.
+├── recall-git/        Read-only detection of the repository a session ran against.
 ├── recall-store/      Archive layout, compression, integrity of .recall/sessions.
 └── recall-index/      Metadata index and search over .recall/index.db.
 ```
 
 ```text
-                    recall-cli
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
-   recall-adapters  recall-store   recall-index
-        └───────────────┼───────────────┘
-                        ▼
-                   recall-core
+                       recall-cli
+        ┌──────────┬───────┴───────┬──────────┐
+        ▼          ▼               ▼          ▼
+  recall-adapters  recall-git  recall-store  recall-index
+        └──────────┴───────┬───────┴──────────┘
+                           ▼
+                      recall-core
 ```
 
 `recall-core` depends on none of the crates below it in that diagram. `recall-cli` is the

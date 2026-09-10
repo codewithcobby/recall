@@ -82,6 +82,9 @@ fn write_metadata(out: &mut impl Write, header: &SessionHeader) -> Result<()> {
     if let Some(project) = &s.project {
         writeln!(out, "project  {}", project.display())?;
     }
+    if let Some(repository) = s.git.as_ref().and_then(|g| g.repository.as_deref()) {
+        writeln!(out, "repo     {}", repository.display())?;
+    }
     if let Some(branch) = s.git.as_ref().and_then(|g| g.branch.as_deref()) {
         writeln!(out, "branch   {branch}")?;
     }
