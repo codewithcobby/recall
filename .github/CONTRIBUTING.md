@@ -99,6 +99,7 @@ crates/
 │                      normalized session model and the capture pipeline's contracts.
 │                      Provider-agnostic, and depends on none of the crates below.
 ├── recall-adapters/   One module per AI coding agent. Discovery and parsing only.
+├── recall-git/        Read-only detection of the repository a session ran against.
 ├── recall-store/      Archive layout, compression, integrity of .recall/sessions.
 └── recall-index/      Metadata index and search over .recall/index.db.
 ```
@@ -111,11 +112,11 @@ therefore point *inward*, toward core:
 ```text
                     recall-cli
                         │            composes and wires implementations
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
-   recall-adapters  recall-store   recall-index
-        │               │               │
-        └───────────────┼───────────────┘
+        ┌──────────┬───────┴───────┬──────────┐
+        ▼          ▼               ▼          ▼
+  recall-adapters  recall-git  recall-store  recall-index
+        │          │               │          │
+        └──────────┴───────┬───────┴──────────┘
                         ▼
                    recall-core
                                      owns the domain types and traits
@@ -123,7 +124,8 @@ therefore point *inward*, toward core:
 
 Two things follow, and both are design errors rather than shortcuts:
 
-- `recall-core` must not depend on `recall-adapters`, `recall-store`, or `recall-index`.
+- `recall-core` must not depend on `recall-adapters`, `recall-git`, `recall-store`, or
+  `recall-index`.
   It defines what a session is and what a store or an index must be able to do; it never
   reaches for a concrete one.
 - Nothing outside `recall-adapters` may contain a provider-specific type, field, or

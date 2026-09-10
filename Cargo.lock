@@ -383,6 +383,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "recall-git"
+version = "0.1.0"
+dependencies = [
+ "recall-core",
+ "tempfile",
+]
+
+[[package]]
 name = "recall-index"
 version = "0.1.0"
 dependencies = [
