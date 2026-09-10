@@ -91,6 +91,17 @@ pub fn watch(project_root: &Path) -> Result<()> {
 
     let stop = interrupt_flag()?;
     run_loop(&roots, &stop, || {
+        // A whole `sync`, every pass, rather than ingesting just what changed.
+        //
+        // That is the point: watch has no ingestion path of its own to drift
+        // from this one, and #25's deduplication means a pass with nothing new
+        // recognises every archived session from its id without reading any of
+        // them.
+        //
+        // It also re-opens the index each time, which looks wasteful and is
+        // deliberate. Holding the database open for the life of the watcher
+        // would lock it against every other `recall` command the user runs
+        // while watching.
         match sync::sync(project_root) {
             // Silence when a pass changes nothing. Most do: a session is
             // usually still being written when its events arrive.
@@ -180,9 +191,12 @@ fn is_interesting(kind: &EventKind) -> bool {
 /// The provider directories to watch.
 ///
 /// Taken from the adapters themselves rather than listed here, so an adapter
-/// added later is watched without this file changing. A directory that does
-/// not exist is skipped: that agent is not installed, and watching a path that
-/// is not there is not something every platform supports.
+/// added later is watched without this file changing. A second list would be a
+/// second thing to remember, and the symptom of forgetting it — one provider
+/// silently never watched — is invisible until someone loses a conversation.
+///
+/// A directory that does not exist is skipped: that agent is not installed, and
+/// watching a path that is not there is not something every platform supports.
 fn watch_roots() -> Vec<PathBuf> {
     sync::adapters()
         .iter()
@@ -288,6 +302,19 @@ mod tests {
             ..sync::Summary::default()
         };
         assert!(is_quiet(&in_progress));
+    }
+
+    #[test]
+    fn every_adapter_is_watched_without_watch_keeping_its_own_list() {
+        // A hand-maintained list here would go stale the first time an adapter
+        // was added, and the symptom — one provider silently never watched —
+        // does not show up until someone loses a conversation.
+        let from_adapters: Vec<PathBuf> = sync::adapters()
+            .iter()
+            .flat_map(|adapter| adapter.search_roots())
+            .filter(|root| root.is_dir())
+            .collect();
+        assert_eq!(watch_roots(), from_adapters);
     }
 
     #[test]
