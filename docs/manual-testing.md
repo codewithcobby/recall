@@ -972,7 +972,8 @@ Two things to look at.
 provider's own id, so a Codex session and a Claude Code session can never
 collide even if both agents used the same uuid.
 
-`BRANCH` is `—` on every Codex row. That is correct, not a bug — see step 4.
+`BRANCH` is `—` on most Codex rows, but **not always** — see step 4, which is
+the subtle one in this phase.
 
 ### 3. The command line is really there
 
@@ -988,20 +989,44 @@ empty string. `exit_code` is absent, because Codex reports the outcome in the
 tool's output rather than as a status, and inventing a `0` there would claim a
 success it never stated.
 
-### 4. Git context is absent, deliberately
+### 4. Where a Codex session's branch comes from
+
+**Read this one carefully — it is the easiest thing here to misread.**
+
+The *adapter* supplies no git context at all. Claude Code puts `gitBranch` on
+every record; Codex records neither branch nor commit, so a Codex session
+arrives from the adapter with none.
+
+Sync then applies Phase 8's rule (#32): detection fills in only what the
+provider could not answer. For Claude Code that is almost always just the
+repository root. For Codex it is the branch too — and detection runs *now*, not
+when the session happened.
 
 ```bash
 recall show <a-codex-id> --summary
 ```
 
-No branch and no commit. Claude Code puts `gitBranch` on every record; Codex
-records neither, so these sessions carry no git context at all rather than a
-half-filled one. A branch guessed from whatever the repository happens to be on
-*now* would be a claim about the past that nothing supports.
+So on a Codex session whose project is a git repository, `branch` is **the
+branch that repository is checked out on today**, not the one the session ran
+on. A session from July can show today's branch. Where the project is not a git
+repository, branch stays `—`.
 
-The model can be absent too, on a rollout that contains no `turn_context`
-record. 7 of the 24 sessions in the installation this was written against had
-none. `—` in that column is the honest answer.
+Confirm it for yourself rather than trusting the column:
+
+```bash
+git -C <the project path from --summary> branch --show-current
+```
+
+If that matches what `recall show --summary` reported, the value came from
+detection, not from the session.
+
+Commits stay absent either way — neither the provider nor detection can say
+which commit a session started or ended on, and Phase 8 deliberately refuses to
+guess.
+
+The model can be absent too, on a rollout with no `turn_context` record. 7 of
+the 24 sessions in the installation this was written against had none. `—` in
+that column is the honest answer.
 
 ### 5. Reasoning is kept; the unreadable part is not
 
@@ -1059,7 +1084,8 @@ Search is provider-agnostic; a Codex session is just another archive to it.
 - [ ] `recall sessions` shows it with provider `codex`
 - [ ] Codex and Claude Code sessions coexist in one archive without colliding
 - [ ] A `command` event carries the real command line, with no invented exit code
-- [ ] Branch and commit are absent on every Codex session
+- [ ] Commits are absent on every Codex session
+- [ ] Any branch shown on a Codex session matches the repository's *current* branch, because detection supplied it rather than the session
 - [ ] A session with no `turn_context` reports no model rather than guessing one
 - [ ] Reasoning summaries are archived; `encrypted_content` is not
 - [ ] Messages appear once, not twice
