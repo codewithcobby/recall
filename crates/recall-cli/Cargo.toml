@@ -31,3 +31,4 @@ recall-git = { version = "0.1.0", path = "../recall-git" }
 recall-core = { path = "../recall-core" }
 tempfile = "3.27.0"
 zstd = "0.14.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }

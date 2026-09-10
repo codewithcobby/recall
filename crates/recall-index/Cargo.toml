@@ -14,3 +14,15 @@ workspace = true
 
 [dependencies]
 recall-core = { path = "../recall-core" }
+
+# `bundled` compiles SQLite from source and links it statically. Recall has to
+# work on a machine with no libsqlite3 and no network, and the archive must not
+# become unreadable because a system library was upgraded underneath it. It also
+# pins one SQLite version across every platform, so STRICT tables and the
+# pragmas below behave the same everywhere.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+thiserror = "2.0.20"
+time = { version = "0.3.45", features = ["macros", "formatting", "parsing"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

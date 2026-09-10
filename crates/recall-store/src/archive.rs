@@ -110,6 +110,12 @@ pub enum ArchiveError {
     UnknownEncoding { id: SessionId, path: PathBuf },
 }
 
+/// One archive, and the header read from it.
+///
+/// The header is a `Result` of its own: one damaged archive must not hide the
+/// rest, so a failure is reported for that session and the traversal continues.
+pub type HeaderAt = (ArchiveEntry, Result<SessionHeader, ArchiveError>);
+
 /// What a write did.
 ///
 /// An existing archive is never rewritten, and that is an ordinary outcome
@@ -249,9 +255,26 @@ impl Archive {
     /// the rest.
     pub fn headers(&self) -> Result<Vec<Result<SessionHeader, ArchiveError>>, ArchiveError> {
         Ok(self
+            .headers_with_paths()?
+            .into_iter()
+            .map(|(_, header)| header)
+            .collect())
+    }
+
+    /// Every archived session's metadata, paired with the archive it came from.
+    ///
+    /// The same single traversal as [`headers`](Self::headers), keeping the
+    /// path. A caller that has to record where each session lives — rebuilding
+    /// the index, for one — would otherwise have to look each archive up again
+    /// by id, turning one walk of the tree into one walk per session.
+    pub fn headers_with_paths(&self) -> Result<Vec<HeaderAt>, ArchiveError> {
+        Ok(self
             .entries()?
             .into_iter()
-            .map(|entry| self.read_header_at(&entry.id, &entry.path))
+            .map(|entry| {
+                let header = self.read_header_at(&entry.id, &entry.path);
+                (entry, header)
+            })
             .collect())
     }
 

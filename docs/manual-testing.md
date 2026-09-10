@@ -691,3 +691,121 @@ HEAD unchanged, and the only thing `git status` should show is `.recall/`.
 - [ ] A repository with no commits still records its branch
 - [ ] No commit is ever recorded
 - [ ] `recall sync` moves nothing in the repository
+
+---
+
+## Phase 9 — the SQLite index
+
+`recall sessions` used to open the first line of every archive, every time. It
+now answers from `.recall/index.db`. The point of testing it by hand is to
+confirm the speed-up is real *and* that the database never becomes something you
+would be sorry to lose.
+
+### 1. The index appears, and sync fills it
+
+```bash
+recall sync
+ls -la .recall/index.db
+```
+
+The file exists and is `-rw-------` — the same as an archive. Nobody else on the
+machine can read it.
+
+### 2. The listing still says the same thing
+
+```bash
+recall sessions
+```
+
+Identical to what Phase 7 produced: same columns, same order, newest first.
+Nothing about the output changed — only where the answer came from.
+
+### 3. It really is coming from the index
+
+The convincing test is to take the archives away:
+
+```bash
+cp -r .recall /tmp/recall-backup      # so this is reversible
+find .recall/sessions -name '*.zst' -delete
+recall sessions
+```
+
+It still lists every session. It could only do that from the database.
+
+Put them back before continuing:
+
+```bash
+rm -rf .recall && cp -r /tmp/recall-backup .recall
+```
+
+### 4. Deleting the index costs nothing
+
+This is the property the whole design rests on.
+
+```bash
+recall sessions > /tmp/before.txt
+rm .recall/index.db
+recall sessions | tail -n +2 > /tmp/after.txt
+diff /tmp/before.txt /tmp/after.txt && echo "identical"
+```
+
+It announces that it is rebuilding — the run is slower, and silence would look
+like a hang — and then lists exactly what it listed before.
+
+### 5. A broken index is replaced, not complained about
+
+```bash
+echo "not a database" > .recall/index.db
+recall sessions
+```
+
+It rebuilds and lists your sessions. It does not ask you to delete a file, and
+it does not fail. There was nothing in the database worth saving.
+
+### 6. A broken index cannot cost you a conversation
+
+The rule everything here follows is that the archive wins.
+
+```bash
+echo "not a database" > .recall/index.db
+recall sync
+```
+
+New sessions are archived normally. If the index cannot be brought up to date,
+sync says so and still succeeds — because the conversation is already safe.
+
+### 7. No conversation content is in the database
+
+```bash
+strings .recall/index.db | grep -i "<a phrase you remember typing>"
+```
+
+Nothing. The database holds ids, timestamps, provider, model, project, git
+fields, an event count and a path — never what was said. `docs/index-and-archive.md`
+states the rules and the test suite holds them.
+
+### 8. It is actually faster
+
+```bash
+time recall sessions
+time recall sessions --rebuild
+```
+
+The second reads every archive; the first reads a database.
+
+Do not expect to see anything on a handful of sessions — at eight sessions both
+finish in about 3 ms and the difference is noise. The index earns its keep as the
+archive grows, because reading every archive is work that scales with the archive
+and querying the database is not. Measured on 2000 archived sessions totalling
+16 MB: **6.5 ms against 95.4 ms**.
+
+### Phase 9 checklist
+
+- [ ] `recall sync` creates `.recall/index.db`, mode 600
+- [ ] `recall sessions` output is unchanged from Phase 7
+- [ ] The listing still answers with the archives deleted
+- [ ] Deleting `index.db` rebuilds it and lists exactly the same sessions
+- [ ] A file that is not a database is replaced without complaint
+- [ ] A broken index does not stop `recall sync` archiving
+- [ ] No transcript text appears in `index.db`
+- [ ] `recall sessions` is materially faster than `--rebuild`

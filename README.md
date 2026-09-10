@@ -166,7 +166,9 @@ place regardless of the machine's timezone. The index is derived data — deleti
 loses nothing, because it rebuilds from the archives.
 
 The full specification, including which paths Recall owns and which it will never
-touch, is in [`docs/archive-layout.md`](docs/archive-layout.md).
+touch, is in [`docs/archive-layout.md`](docs/archive-layout.md). The division of
+labour between the two — what may live in the database, and why deleting it is
+safe — is in [`docs/index-and-archive.md`](docs/index-and-archive.md).
 
 ## Git Awareness
 

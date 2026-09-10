@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod exit;
+mod indexing;
 mod sessions;
 mod show;
 mod sync;
@@ -51,7 +52,15 @@ enum Command {
     /// Discover and archive new AI sessions.
     Sync,
     /// List archived sessions.
-    Sessions,
+    Sessions {
+        /// Rebuild the index from the archives before listing.
+        ///
+        /// The listing is answered from `.recall/index.db`, which `recall sync`
+        /// keeps current. Use this if it has been changed or deleted outside
+        /// Recall, or to check that the archives still produce the same list.
+        #[arg(long)]
+        rebuild: bool,
+    },
     /// Show an archived session.
     Show {
         /// Session id, or an unambiguous prefix of one.
@@ -81,7 +90,7 @@ impl Command {
         match self {
             Command::Init => None,
             Command::Sync => None,
-            Command::Sessions => None,
+            Command::Sessions { .. } => None,
             Command::Show { .. } => None,
             Command::Verify { .. } => None,
             Command::Search { .. } => Some(38),
@@ -92,7 +101,7 @@ impl Command {
         match self {
             Command::Init => "init",
             Command::Sync => "sync",
-            Command::Sessions => "sessions",
+            Command::Sessions { .. } => "sessions",
             Command::Show { .. } => "show",
             Command::Verify { .. } => "verify",
             Command::Search { .. } => "search",
@@ -134,7 +143,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Init => run_init(),
         Command::Sync => run_sync(),
-        Command::Sessions => run_sessions(),
+        Command::Sessions { rebuild } => run_sessions(rebuild),
         Command::Show { session, summary } => run_show(&session, summary),
         Command::Verify { session } => run_verify(session.as_deref()),
         // Every other command returned above.
@@ -154,10 +163,10 @@ fn main() -> ExitCode {
 }
 
 /// `recall sessions`
-fn run_sessions() -> Result<()> {
+fn run_sessions(rebuild: bool) -> Result<()> {
     let project_root =
         std::env::current_dir().context("could not determine the current directory")?;
-    sessions::list(&project_root)
+    sessions::list(&project_root, rebuild)
 }
 
 /// `recall show`
@@ -237,6 +246,14 @@ fn run_sync() -> Result<()> {
                 failure.provider, failure.provider_session_id, failure.reason
             );
         }
+    }
+
+    // Deliberately not an error. Everything reported above is in the archive;
+    // what is missing is the shortcut for finding it again, and the next sync
+    // notices and repairs it.
+    if let Some(problem) = &summary.index_problem {
+        println!("\nThe index could not be brought up to date: {problem}");
+        println!("  Archived sessions are unaffected. The next sync will retry.");
     }
     Ok(())
 }
