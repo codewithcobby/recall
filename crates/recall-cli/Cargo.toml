@@ -28,4 +28,5 @@ thiserror = "2.0.20"
 recall-git = { version = "0.1.0", path = "../recall-git" }
 
 [dev-dependencies]
+recall-core = { path = "../recall-core" }
 tempfile = "3.27.0"
