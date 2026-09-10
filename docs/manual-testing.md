@@ -517,3 +517,93 @@ history; it never writes to it.
 - [ ] Another project's sessions are not archived here
 - [ ] One unreadable session is reported and the others still land
 - [ ] `~/.claude` is unchanged after a sync
+
+---
+
+## Phase 7 — reading the archive
+
+Implemented by #28, #29 and #30, plus #130 and #131.
+
+The first phase where Recall gives anything back.
+
+### 1. List what is archived
+
+```bash
+recall sessions
+```
+
+```text
+ID        STARTED           EVENTS  PROVIDER     MODEL            BRANCH
+2a0a31a8  2026-09-09 08:41    2450  claude-code  claude-opus-5    fix/198-deletion-lifecycle
+ba21d510  2026-09-01 13:20   16063  claude-code  claude-sonnet-5  security/143-refresh-token
+6eaeb489  2026-08-26 09:14       2  claude-code  —                —
+```
+
+Newest first. `EVENTS` shows `?` for archives written before the count was
+recorded — re-sync to fill it in.
+
+This reads **one line per archive**, not all of them. On a real archive of
+eleven sessions and 63,190 events that is 17 ms against 697 ms.
+
+### 2. Read one back
+
+```bash
+recall show 6eaeb489
+```
+
+Eight characters is enough; any unambiguous prefix works. An ambiguous one lists
+the candidates and refuses rather than guessing.
+
+```bash
+recall show ba21d510 --summary     # metadata only
+recall show ba21d510 | less        # a large transcript
+```
+
+Nothing is truncated, so a 16,000-event session produces about 145,000 lines.
+It streams, so that costs roughly 12 MB of memory rather than growing with the
+session.
+
+### 3. Check the archives are intact
+
+```bash
+recall verify
+```
+
+```text
+11 sessions checked: 11 readable, 0 damaged
+```
+
+**Worth understanding:** step 1 cannot tell you this. Try it —
+
+```bash
+cp -R .recall /tmp/damaged && cd /tmp/damaged
+# flip a byte in the middle of an archive
+recall sessions    # still reports every session
+recall verify      # reports the damaged one, exits 7
+```
+
+The listing validates only each archive's first line. That is the price of it
+being fast, and `recall verify` is the deliberate, expensive alternative.
+
+### 4. Exit codes
+
+```bash
+recall sessions ; echo $?     # 4 outside an initialized project
+recall show zzzz ; echo $?    # 5
+recall verify ; echo $?       # 7 if anything is damaged
+recall --help ; echo $?       # 0
+```
+
+A person reads the message; a script reads the code. `recall --help` lists them.
+
+### Phase 7 checklist
+
+- [ ] `recall sessions` lists archived sessions, newest first
+- [ ] Event counts appear for sessions archived by the current build
+- [ ] `recall show <prefix>` prints a conversation with its tool calls
+- [ ] An ambiguous prefix lists candidates and refuses
+- [ ] `--summary` prints metadata without the transcript
+- [ ] A large session renders without memory growing with its size
+- [ ] `recall verify` reports a healthy archive as readable
+- [ ] `recall verify` catches damage that `recall sessions` cannot see, and exits 7
+- [ ] Exit codes match the table in `recall --help`

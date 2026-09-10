@@ -7,7 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod exit;
+mod sessions;
+mod show;
 mod sync;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -21,7 +25,16 @@ use recall_store::InitOutcome;
     about = "Local memory for AI coding sessions",
     long_about = "Recall discovers and archives AI coding sessions locally, so the work \
                   done in a session outlives the session itself.\n\nNothing leaves your \
-                  machine.",
+                  machine.\n\nExit codes:\n  \
+                  0  success\n  \
+                  1  failed\n  \
+                  2  the command line could not be understood\n  \
+                  3  the command is not implemented yet\n  \
+                  4  Recall is not initialized here\n  \
+                  5  no such session\n  \
+                  6  the session id was ambiguous\n  \
+                  7  an archive is damaged or unreadable\n  \
+                  8  a file could not be read or written",
     subcommand_required = true,
     arg_required_else_help = true
 )]
@@ -43,6 +56,17 @@ enum Command {
     Show {
         /// Session id, or an unambiguous prefix of one.
         session: String,
+        /// Print only the session's metadata, not its transcript.
+        #[arg(long)]
+        summary: bool,
+    },
+    /// Check that archived sessions are still readable.
+    ///
+    /// Reads every archive in full, unlike `recall sessions`, which reads only
+    /// each one's first line.
+    Verify {
+        /// A session id or prefix. Omit to check every archive.
+        session: Option<String>,
     },
     /// Search archived sessions.
     Search {
@@ -57,8 +81,9 @@ impl Command {
         match self {
             Command::Init => None,
             Command::Sync => None,
-            Command::Sessions => Some(28),
-            Command::Show { .. } => Some(29),
+            Command::Sessions => None,
+            Command::Show { .. } => None,
+            Command::Verify { .. } => None,
             Command::Search { .. } => Some(38),
         }
     }
@@ -69,42 +94,113 @@ impl Command {
             Command::Sync => "sync",
             Command::Sessions => "sessions",
             Command::Show { .. } => "show",
+            Command::Verify { .. } => "verify",
             Command::Search { .. } => "search",
         }
     }
 }
 
-/// A command exists but does nothing yet.
-const EXIT_NOT_IMPLEMENTED: u8 = 3;
-/// The command failed.
-const EXIT_FAILURE: u8 = 1;
-
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // Parsed rather than `Cli::parse()` so the usage exit code is ours and
+    // documented, not whatever the argument parser happens to use. `--help` and
+    // `--version` arrive here as errors too, and they are successes.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // `--help` and `--version` are requests and succeed. Help shown
+            // *because* no command was given is a usage error: the user made a
+            // mistake, and a script must be able to tell.
+            let asked_for_it = matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
+            let _ = e.print();
+            return ExitCode::from(if asked_for_it {
+                exit::SUCCESS
+            } else {
+                exit::USAGE
+            });
+        }
+    };
 
     if let Some(issue) = cli.command.tracking_issue() {
         eprintln!(
             "recall {}: not implemented yet (tracked in #{issue})",
             cli.command.name()
         );
-        return ExitCode::from(EXIT_NOT_IMPLEMENTED);
+        return ExitCode::from(exit::NOT_IMPLEMENTED);
     }
 
     let result = match cli.command {
         Command::Init => run_init(),
         Command::Sync => run_sync(),
+        Command::Sessions => run_sessions(),
+        Command::Show { session, summary } => run_show(&session, summary),
+        Command::Verify { session } => run_verify(session.as_deref()),
         // Every other command returned above.
         _ => unreachable!("handled by the tracking-issue branch"),
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => ExitCode::from(exit::SUCCESS),
         Err(e) => {
-            // The chain matters: the top line says what failed, the causes say why.
+            // The chain matters: the top line says what failed, the causes say
+            // why. The code says which kind of failure it was, so a script can
+            // tell a typo from data loss without parsing English.
             eprintln!("error: {e:#}");
-            ExitCode::from(EXIT_FAILURE)
+            ExitCode::from(exit::code_for(&e))
         }
     }
+}
+
+/// `recall sessions`
+fn run_sessions() -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    sessions::list(&project_root)
+}
+
+/// `recall show`
+fn run_show(session: &str, summary: bool) -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    show::show(&project_root, session, summary)
+}
+
+/// `recall verify`
+fn run_verify(session: Option<&str>) -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    let report = verify::verify(&project_root, session)?;
+
+    if report.checked() == 0 {
+        println!("No sessions archived yet — run `recall sync`");
+        return Ok(());
+    }
+
+    println!(
+        "{} session{} checked: {} readable, {} damaged",
+        report.checked(),
+        if report.checked() == 1 { "" } else { "s" },
+        report.readable,
+        report.damaged.len()
+    );
+
+    if report.damaged.is_empty() {
+        return Ok(());
+    }
+
+    println!();
+    for damaged in &report.damaged {
+        println!("  {}  {}", damaged.id, damaged.reason);
+    }
+
+    // A damaged archive is data loss, and a script should be able to notice
+    // without reading English.
+    Err(exit::Problem::ArchivesDamaged {
+        count: report.damaged.len(),
+    }
+    .into())
 }
 
 /// `recall sync`

@@ -274,6 +274,39 @@ recall search "authentication"
 
 Search previous AI work.
 
+```bash
+recall verify
+```
+
+Check that archived sessions are still readable.
+
+**`recall sessions` does not validate archives.** It reads one line per archive
+— the header — which is what makes listing cheap, and means damage further into
+a file is invisible to it. A session can appear healthy in a listing and fail
+when you try to read it.
+
+`recall verify` is that question asked deliberately: it decompresses every
+archive in full, so Zstandard's frame checksums see every byte. Slower on
+purpose, and it exits 7 if anything is damaged.
+
+### Exit codes
+
+Recall's failures are distinguishable to a script, not only readable to a
+person — "there is no such session" is a typo, while "this archive is damaged"
+is data loss, and the two deserve different reactions.
+
+| code | meaning |
+|------|---------|
+| 0 | success |
+| 1 | failed |
+| 2 | the command line could not be understood |
+| 3 | the command is not implemented yet |
+| 4 | Recall is not initialized here |
+| 5 | no such session |
+| 6 | the session id was ambiguous |
+| 7 | an archive is damaged or unreadable |
+| 8 | a file could not be read or written |
+
 The interface should remain simple enough that Recall becomes part of the normal
 development workflow rather than another system developers have to maintain.
 

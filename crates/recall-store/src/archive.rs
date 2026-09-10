@@ -9,11 +9,11 @@
 
 use std::cell::Cell;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use recall_core::{FormatError, Session, SessionId};
+use recall_core::{FormatError, Session, SessionEvent, SessionHeader, SessionId, SessionReader};
 
 use crate::layout::{Layout, COMPRESSION_LEVEL, SESSION_EXTENSION, UNCOMPRESSED_SESSION_EXTENSION};
 
@@ -239,6 +239,74 @@ impl Archive {
         Ok(entries)
     }
 
+    /// Every archived session's metadata, without its transcript.
+    ///
+    /// Reads one line per archive rather than all of them. On a real archive
+    /// that is the difference between decompressing twenty-five thousand events
+    /// and decompressing one line to find out there are twenty-five thousand.
+    ///
+    /// Failures are reported per session, so one damaged archive does not hide
+    /// the rest.
+    pub fn headers(&self) -> Result<Vec<Result<SessionHeader, ArchiveError>>, ArchiveError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .map(|entry| self.read_header_at(&entry.id, &entry.path))
+            .collect())
+    }
+
+    /// Read one archive's header.
+    fn read_header_at(&self, id: &SessionId, path: &Path) -> Result<SessionHeader, ArchiveError> {
+        let file = File::open(path).map_err(|source| ArchiveError::Read {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let reader = BufReader::new(file);
+
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(SESSION_EXTENSION) => {
+                let decoder =
+                    zstd::stream::Decoder::new(reader).map_err(|source| ArchiveError::Read {
+                        id: id.clone(),
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                let failed = Rc::new(Cell::new(false));
+                let watched = WatchedReader {
+                    inner: decoder,
+                    failed: Rc::clone(&failed),
+                };
+                recall_core::read_header(BufReader::new(watched)).map_err(|source| {
+                    if failed.get() {
+                        ArchiveError::Corrupt {
+                            id: id.clone(),
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                    } else {
+                        ArchiveError::Decode {
+                            id: id.clone(),
+                            path: path.to_path_buf(),
+                            source,
+                        }
+                    }
+                })
+            }
+            Some(UNCOMPRESSED_SESSION_EXTENSION) => {
+                recall_core::read_header(reader).map_err(|source| ArchiveError::Decode {
+                    id: id.clone(),
+                    path: path.to_path_buf(),
+                    source,
+                })
+            }
+            _ => Err(ArchiveError::UnknownEncoding {
+                id: id.clone(),
+                path: path.to_path_buf(),
+            }),
+        }
+    }
+
     /// Read every archived session, reporting failures per session.
     ///
     /// One damaged archive must not stop a caller reading the rest — the
@@ -250,6 +318,27 @@ impl Archive {
             .into_iter()
             .map(|entry| self.read_at(&entry.id, &entry.path))
             .collect())
+    }
+
+    /// Find the one session whose id starts with `prefix`.
+    ///
+    /// Nobody types 32 hex characters. `recall sessions` prints eight, and this
+    /// accepts that or any other unambiguous prefix.
+    ///
+    /// Returns every match when there is more than one, so a caller can say
+    /// which rather than guessing. Guessing is how the wrong conversation gets
+    /// shown.
+    pub fn resolve(&self, prefix: &str) -> Result<Vec<SessionId>, ArchiveError> {
+        let prefix = prefix.to_ascii_lowercase();
+        let mut matches: Vec<SessionId> = self
+            .entries()?
+            .into_iter()
+            .filter(|e| e.id.as_str().starts_with(&prefix))
+            .map(|e| e.id)
+            .collect();
+        matches.sort();
+        matches.dedup();
+        Ok(matches)
     }
 
     /// Find the archive for a session id.
@@ -279,6 +368,60 @@ impl Archive {
             }
         }
         Ok(None)
+    }
+
+    /// Open an archived session for streaming.
+    ///
+    /// Events are produced one at a time, so memory is bounded by the largest
+    /// single event rather than by the session. [`Self::read`] is still there
+    /// for callers that genuinely need a whole [`Session`] — `recall sync`
+    /// does, since it archives one — but printing a transcript does not.
+    pub fn stream(&self, id: &SessionId) -> Result<ArchiveStream, ArchiveError> {
+        let path = self
+            .locate(id)?
+            .ok_or_else(|| ArchiveError::NotFound { id: id.clone() })?;
+        self.stream_at(id, &path)
+    }
+
+    /// Open a session at a known path for streaming.
+    fn stream_at(&self, id: &SessionId, path: &Path) -> Result<ArchiveStream, ArchiveError> {
+        let file = File::open(path).map_err(|source| ArchiveError::Read {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let reader = BufReader::new(file);
+
+        let decompression_failed = Rc::new(Cell::new(false));
+        let source: Box<dyn BufRead> = match path.extension().and_then(|e| e.to_str()) {
+            Some(SESSION_EXTENSION) => {
+                let decoder =
+                    zstd::stream::Decoder::new(reader).map_err(|source| ArchiveError::Read {
+                        id: id.clone(),
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+                Box::new(BufReader::new(WatchedReader {
+                    inner: decoder,
+                    failed: Rc::clone(&decompression_failed),
+                }))
+            }
+            Some(UNCOMPRESSED_SESSION_EXTENSION) => Box::new(reader),
+            _ => {
+                return Err(ArchiveError::UnknownEncoding {
+                    id: id.clone(),
+                    path: path.to_path_buf(),
+                })
+            }
+        };
+
+        let stream = ArchiveStream {
+            id: id.clone(),
+            path: path.to_path_buf(),
+            decompression_failed,
+            reader: None,
+        };
+        stream.begin(source)
     }
 
     /// Read an archived session back.
@@ -435,6 +578,66 @@ impl Archive {
         })?;
 
         Ok(staged)
+    }
+}
+
+/// An archived session, read an event at a time.
+///
+/// Carries enough context to describe a failure the way the rest of the archive
+/// does: which session, at which path, and whether the bytes were damaged or
+/// merely unreadable as a session.
+pub struct ArchiveStream {
+    id: SessionId,
+    path: PathBuf,
+    decompression_failed: Rc<Cell<bool>>,
+    reader: Option<SessionReader<Box<dyn BufRead>>>,
+}
+
+impl ArchiveStream {
+    /// Read the header, which is where a malformed archive usually announces
+    /// itself.
+    fn begin(mut self, source: Box<dyn BufRead>) -> Result<Self, ArchiveError> {
+        match SessionReader::open(source) {
+            Ok(reader) => {
+                self.reader = Some(reader);
+                Ok(self)
+            }
+            Err(source) => Err(self.describe(source)),
+        }
+    }
+
+    /// The session's metadata, available before any event is read.
+    pub fn header(&self) -> &SessionHeader {
+        self.reader
+            .as_ref()
+            .expect("a stream always has a reader once opened")
+            .header()
+    }
+
+    /// Turn a format failure into an archive failure.
+    fn describe(&self, source: FormatError) -> ArchiveError {
+        if self.decompression_failed.get() {
+            ArchiveError::Corrupt {
+                id: self.id.clone(),
+                path: self.path.clone(),
+                source,
+            }
+        } else {
+            ArchiveError::Decode {
+                id: self.id.clone(),
+                path: self.path.clone(),
+                source,
+            }
+        }
+    }
+}
+
+impl Iterator for ArchiveStream {
+    type Item = Result<SessionEvent, ArchiveError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let event = self.reader.as_mut()?.next()?;
+        Some(event.map_err(|e| self.describe(e)))
     }
 }
 
