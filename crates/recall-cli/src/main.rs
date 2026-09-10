@@ -92,7 +92,12 @@ enum Command {
     /// `.recall/index.db` has been deleted.
     Search {
         /// What to look for.
-        query: String,
+        ///
+        /// Several words can be given without quoting — `recall search retry
+        /// backoff` is the same as `recall search "retry backoff"`. Quote a
+        /// phrase when you want those words in that order.
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
     },
 }
 
@@ -158,7 +163,7 @@ fn main() -> ExitCode {
         Command::Sessions { rebuild } => run_sessions(rebuild),
         Command::Show { session, summary } => run_show(&session, summary),
         Command::Verify { session } => run_verify(session.as_deref()),
-        Command::Search { query } => run_search(&query),
+        Command::Search { query } => run_search(&query.join(" ")),
     };
 
     match result {
