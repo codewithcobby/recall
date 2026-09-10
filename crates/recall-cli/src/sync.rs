@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
+
+use crate::exit::Problem;
 use recall_adapters::ClaudeCode;
 use recall_core::{Adapter, AdapterError, DiscoveredSession, SessionId};
 use recall_store::{Archive, Stored};
@@ -60,11 +62,12 @@ impl Summary {
 /// Archive every session belonging to this project.
 pub fn sync(project_root: &Path) -> Result<Summary> {
     let archive = Archive::open(project_root);
-    anyhow::ensure!(
-        archive.layout().root().is_dir(),
-        "Recall is not initialized in {} — run `recall init` first",
-        project_root.display()
-    );
+    if !archive.layout().root().is_dir() {
+        return Err(Problem::NotInitialized {
+            path: project_root.to_path_buf(),
+        }
+        .into());
+    }
 
     let mut summary = Summary::default();
     for adapter in adapters() {
