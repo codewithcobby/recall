@@ -354,44 +354,52 @@ mod tests {
     /// Nothing here sleeps to synchronise: every wait blocks on the channel
     /// the loop reports passes through, and returns the moment one arrives.
     struct Watching {
-        dir: tempfile::TempDir,
+        dirs: Vec<tempfile::TempDir>,
         stop: Arc<AtomicBool>,
         passes: mpsc::Receiver<()>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Watching {
-        /// Start watching, and return only once the watcher is demonstrably
-        /// live.
+        /// Start watching one directory.
+        fn start() -> Self {
+            Self::start_roots(1)
+        }
+
+        /// Start watching `count` directories, and return only once the
+        /// watcher is demonstrably live.
         ///
         /// Establishing a watch is not instant on any platform. A test that
         /// wrote its file first would lose the event and fail for a reason
         /// that has nothing to do with the code. So this writes throwaway
         /// probes until one is actually reported, which proves events are
         /// flowing before the test does anything it intends to measure.
-        fn start() -> Self {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let root = dir.path().to_path_buf();
+        fn start_roots(count: usize) -> Self {
+            let dirs: Vec<_> = (0..count)
+                .map(|_| tempfile::tempdir().expect("temp dir"))
+                .collect();
+            let roots: Vec<PathBuf> = dirs.iter().map(|d| d.path().to_path_buf()).collect();
             let stop = Arc::new(AtomicBool::new(false));
             let (tx, passes) = mpsc::channel();
 
             let loop_stop = Arc::clone(&stop);
-            let loop_root = root.clone();
             let worker = std::thread::spawn(move || {
-                run_loop(&[loop_root], &loop_stop, || {
+                run_loop(&roots, &loop_stop, || {
                     let _ = tx.send(());
                 })
                 .expect("watch loop");
             });
 
             let watching = Self {
-                dir,
+                dirs,
                 stop,
                 passes,
                 worker: Some(worker),
             };
 
-            let probe = watching.path(".probe");
+            // Probe the last root: if that one is live, the earlier ones —
+            // registered before it — are too.
+            let probe = watching.path_in(count - 1, ".probe");
             let deadline = Instant::now() + DEADLINE;
             loop {
                 assert!(
@@ -412,7 +420,11 @@ mod tests {
         }
 
         fn path(&self, name: &str) -> PathBuf {
-            self.dir.path().join(name)
+            self.path_in(0, name)
+        }
+
+        fn path_in(&self, root: usize, name: &str) -> PathBuf {
+            self.dirs[root].path().join(name)
         }
 
         /// Block until the loop runs a pass. False if it never does.
@@ -525,6 +537,103 @@ mod tests {
 
         std::fs::remove_file(&path).expect("remove");
         assert!(w.saw_a_pass(), "a removal did not trigger a pass");
+    }
+
+    #[test]
+    fn a_session_in_a_directory_created_after_watching_began_is_noticed() {
+        // **The case that matters most in practice.** Neither provider writes
+        // sessions at the top of the directory being watched: Claude Code
+        // creates `projects/<slug>/` the first time an agent runs somewhere,
+        // and Codex creates `sessions/<year>/<month>/<day>/` every day. Both
+        // appear *after* the watch is established.
+        //
+        // A watcher that only covered directories present at startup would
+        // work all day and then silently miss every new project and every
+        // session after midnight.
+        let w = Watching::start();
+        let nested = w.path("projects").join("-w-demo");
+        std::fs::create_dir_all(&nested).expect("create nested directory");
+        assert!(
+            w.saw_a_pass(),
+            "a new subdirectory did not reach the watcher"
+        );
+        w.settle();
+
+        std::fs::write(nested.join("session.jsonl"), b"{}\n").expect("write session");
+        assert!(
+            w.saw_a_pass(),
+            "a session inside a newly created directory was missed"
+        );
+    }
+
+    #[test]
+    fn a_session_deep_in_a_date_tree_is_noticed() {
+        // Codex's shape: sessions/<year>/<month>/<day>/rollout-....jsonl, with
+        // every level created on the day it is first needed.
+        let w = Watching::start();
+        let deep = w.path("sessions").join("2026").join("09").join("10");
+        std::fs::create_dir_all(&deep).expect("create date tree");
+        assert!(w.saw_a_pass(), "a new date tree did not reach the watcher");
+        w.settle();
+
+        std::fs::write(deep.join("rollout-abc.jsonl"), b"{}\n").expect("write rollout");
+        assert!(w.saw_a_pass(), "a session four levels down was missed");
+    }
+
+    #[test]
+    fn a_file_removed_while_being_written_does_not_stop_the_watch() {
+        // A crashed agent, or a temporary file the provider cleans up. The
+        // watcher must carry on rather than treating it as a reason to stop.
+        let w = Watching::start();
+        let path = w.path("session.jsonl");
+
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(b"{\"partial\":true}\n").expect("write");
+        f.flush().expect("flush");
+        std::fs::remove_file(&path).expect("remove mid-write");
+        drop(f);
+
+        assert!(w.saw_a_pass(), "a file removed mid-write stalled the watch");
+        w.settle();
+
+        // And the watch is still working afterwards.
+        std::fs::write(w.path("next.jsonl"), b"{}\n").expect("write next");
+        assert!(
+            w.saw_a_pass(),
+            "the watch stopped noticing changes after a mid-write removal"
+        );
+    }
+
+    #[test]
+    fn every_watched_directory_is_noticed_not_just_the_first() {
+        // Recall watches one directory per installed agent. A loop that only
+        // registered the first would archive one provider and silently ignore
+        // the rest.
+        let w = Watching::start_roots(2);
+
+        std::fs::write(w.path_in(0, "first.jsonl"), b"{}\n").expect("write first");
+        assert!(w.saw_a_pass(), "a change in the first directory was missed");
+        w.settle();
+
+        std::fs::write(w.path_in(1, "second.jsonl"), b"{}\n").expect("write second");
+        assert!(
+            w.saw_a_pass(),
+            "a change in the second directory was missed"
+        );
+    }
+
+    #[test]
+    fn the_watch_keeps_working_after_many_changes() {
+        // Guards against a watcher that fires once and then goes deaf — which
+        // is what a mistake in the debounce bookkeeping would look like, and
+        // would not show up in a test that only ever makes one change.
+        let w = Watching::start();
+        for i in 0..5 {
+            std::fs::write(w.path(&format!("session-{i}.jsonl")), b"{}\n").expect("write");
+            assert!(w.saw_a_pass(), "change {i} was not noticed");
+            w.settle();
+        }
     }
 
     #[test]
