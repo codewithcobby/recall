@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod exit;
+mod indexing;
 mod sessions;
 mod show;
 mod sync;
@@ -237,6 +238,14 @@ fn run_sync() -> Result<()> {
                 failure.provider, failure.provider_session_id, failure.reason
             );
         }
+    }
+
+    // Deliberately not an error. Everything reported above is in the archive;
+    // what is missing is the shortcut for finding it again, and the next sync
+    // notices and repairs it.
+    if let Some(problem) = &summary.index_problem {
+        println!("\nThe index could not be brought up to date: {problem}");
+        println!("  Archived sessions are unaffected. The next sync will retry.");
     }
     Ok(())
 }

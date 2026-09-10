@@ -9,8 +9,12 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result};
 
 use crate::exit::Problem;
+use crate::indexing;
 use recall_adapters::ClaudeCode;
-use recall_core::{Adapter, AdapterError, DiscoveredSession, GitContext, Session, SessionId};
+use recall_core::{
+    Adapter, AdapterError, DiscoveredSession, GitContext, Session, SessionHeader, SessionId,
+};
+use recall_index::Index;
 use recall_store::{Archive, Stored};
 
 /// What one sync run did.
@@ -31,6 +35,17 @@ pub struct Summary {
     /// Collected rather than returned early: one unreadable session must not
     /// cost the user every session after it.
     pub failures: Vec<Failure>,
+    /// Rows written to the index by this run.
+    ///
+    /// Includes sessions this run archived and sessions it found the index had
+    /// fallen behind on, so it can exceed `archived`.
+    pub indexed: usize,
+    /// Why the index could not be brought up to date, if it could not.
+    ///
+    /// Not a failure of the sync. Everything reported as archived is in the
+    /// archive; only the shortcut for finding it again is missing, and the next
+    /// run rebuilds it.
+    pub index_problem: Option<String>,
 }
 
 /// How long a session file must be untouched before it is archived.
@@ -70,9 +85,36 @@ pub fn sync(project_root: &Path) -> Result<Summary> {
     }
 
     let mut summary = Summary::default();
+
+    // Opened once, and only for its side of the work. A database that will not
+    // open costs the listing its shortcut; it must not cost the user their
+    // conversations, so the sync goes ahead without it.
+    let mut index = match indexing::open(&archive) {
+        Ok((index, _)) => Some(index),
+        Err(e) => {
+            summary.index_problem = Some(e.to_string());
+            None
+        }
+    };
+    let mut batch = indexing::Batch::default();
+
     for adapter in adapters() {
-        sync_adapter(adapter.as_ref(), project_root, &archive, &mut summary)?;
+        sync_adapter(
+            adapter.as_ref(),
+            project_root,
+            &archive,
+            index.as_mut(),
+            &mut batch,
+            &mut summary,
+        )?;
     }
+
+    if let Some(index) = index.as_mut() {
+        batch.flush(index);
+    }
+    summary.indexed = batch.written;
+    summary.index_problem = summary.index_problem.take().or(batch.problem);
+
     Ok(summary)
 }
 
@@ -88,6 +130,8 @@ fn sync_adapter(
     adapter: &dyn Adapter,
     project_root: &Path,
     archive: &Archive,
+    mut index: Option<&mut Index>,
+    batch: &mut indexing::Batch,
     summary: &mut Summary,
 ) -> Result<()> {
     let discovered = adapter
@@ -115,8 +159,20 @@ fn sync_adapter(
         // split in the adapter trait was for.
         let id = SessionId::derive(adapter.provider(), &session.provider_session_id);
         match archive.locate(&id) {
-            Ok(Some(_)) => {
+            Ok(Some(path)) => {
                 summary.already_had += 1;
+                // Reconciliation. The archive has it and the index may not —
+                // because an earlier run's index write failed, because the
+                // database was replaced, or because the session was archived by
+                // a build that had no index at all. Reading one header is the
+                // cheap way to put it back.
+                if let Some(index) = index.as_deref_mut() {
+                    if indexing::needs_indexing(index, &id) {
+                        if let Some(header) = indexing::header_of(archive, &id) {
+                            batch.add(index, indexing::row(header, archive, &path));
+                        }
+                    }
+                }
                 continue;
             }
             Ok(None) => {}
@@ -133,8 +189,17 @@ fn sync_adapter(
         }
 
         match archive_one(adapter, archive, &session) {
-            Ok(Outcome::Stored(Stored::Written(_))) => summary.archived += 1,
-            Ok(Outcome::Stored(Stored::AlreadyPresent(_))) => summary.already_had += 1,
+            Ok(Outcome::Stored(stored, header)) => {
+                match stored {
+                    Stored::Written(_) => summary.archived += 1,
+                    Stored::AlreadyPresent(_) => summary.already_had += 1,
+                }
+                // Only after the archive has it. The row points at a file that
+                // is already on disk, never at one that is about to be.
+                if let Some(index) = index.as_deref_mut() {
+                    batch.add(index, indexing::row(*header, archive, stored.path()));
+                }
+            }
             Ok(Outcome::StillBeingWritten) => summary.in_progress += 1,
             Err(reason) => summary.failures.push(Failure {
                 provider: adapter.provider().to_string(),
@@ -167,10 +232,22 @@ fn archive_one(
 
     add_repository(&mut session);
 
-    archive
-        .write(&session)
-        .map(Outcome::Stored)
-        .map_err(|e| describe_archive(&e))
+    let stored = archive.write(&session).map_err(|e| describe_archive(&e))?;
+
+    // The transcript stays in the archive. What travels on from here is the
+    // metadata and the count — carrying the events would put a whole
+    // conversation in memory for every session in a batch, and the index has no
+    // use for them. See the boundary in #37.
+    let event_count = Some(session.event_count());
+    session.events = Vec::new();
+
+    Ok(Outcome::Stored(
+        stored,
+        Box::new(SessionHeader {
+            session,
+            event_count,
+        }),
+    ))
 }
 
 /// Record which repository the session's project is in.
@@ -206,7 +283,11 @@ fn add_repository(session: &mut Session) {
 
 /// What happened to one session.
 enum Outcome {
-    Stored(Stored),
+    /// It is in the archive, with the metadata the index needs.
+    ///
+    /// The header is boxed so that this variant does not set the size of every
+    /// `Outcome`, including the one that carries nothing.
+    Stored(Stored, Box<SessionHeader>),
     /// It changed while it was being read.
     StillBeingWritten,
 }
