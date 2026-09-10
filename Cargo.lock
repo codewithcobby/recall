@@ -364,6 +364,7 @@ dependencies = [
  "clap",
  "recall-adapters",
  "recall-core",
+ "recall-git",
  "recall-index",
  "recall-store",
  "tempfile",

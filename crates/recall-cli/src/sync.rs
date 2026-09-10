@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::exit::Problem;
 use recall_adapters::ClaudeCode;
-use recall_core::{Adapter, AdapterError, DiscoveredSession, SessionId};
+use recall_core::{Adapter, AdapterError, DiscoveredSession, GitContext, Session, SessionId};
 use recall_store::{Archive, Stored};
 
 /// What one sync run did.
@@ -156,7 +156,7 @@ fn archive_one(
     discovered: &DiscoveredSession,
 ) -> Result<Outcome, String> {
     let before = written_at(&discovered.path);
-    let session = adapter.load(discovered).map_err(describe)?;
+    let mut session = adapter.load(discovered).map_err(describe)?;
 
     // The session may have grown while it was being read, in which case what
     // was loaded is a snapshot of something still in motion. Archiving it would
@@ -165,10 +165,43 @@ fn archive_one(
         return Ok(Outcome::StillBeingWritten);
     }
 
+    add_repository(&mut session);
+
     archive
         .write(&session)
         .map(Outcome::Stored)
         .map_err(|e| describe_archive(&e))
+}
+
+/// Record which repository the session's project is in.
+///
+/// The provider is the authority on everything it recorded. Claude Code writes
+/// the branch that was checked out *during* the session; detection here runs
+/// afterwards, potentially days later and on a different branch entirely. So
+/// what the adapter supplied is never overwritten — this only fills what it
+/// could not answer.
+///
+/// In practice that means the repository root, which no provider records, and
+/// the branch when the provider had none.
+fn add_repository(session: &mut Session) {
+    let Some(project) = session.project.as_deref() else {
+        return;
+    };
+    let Some(detected) = recall_git::detect(project) else {
+        // Not in a repository, or no git. Ordinary.
+        return;
+    };
+
+    let existing = session.git.take().unwrap_or_default();
+    session.git = Some(GitContext {
+        repository: existing.repository.or(detected.repository),
+        // What was true during the session beats what is true now.
+        branch: existing.branch.or(detected.branch),
+        // Neither the provider nor detection can say which commit a session
+        // started or ended on. See recall_git's `commits_are_not_guessed`.
+        commit_at_start: existing.commit_at_start,
+        commit_at_end: existing.commit_at_end,
+    });
 }
 
 /// What happened to one session.
@@ -307,6 +340,65 @@ mod tests {
         // worse failure.
         let ahead = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
         assert!(!is_recent(ahead, QUIET_PERIOD));
+    }
+
+    /// A session carrying whatever git metadata a provider supplied.
+    fn session_with(project: Option<&str>, git: Option<GitContext>) -> Session {
+        let mut s = Session::new(
+            recall_core::Provider::new("claude-code").expect("provider"),
+            "s",
+            time::OffsetDateTime::now_utc(),
+        );
+        s.project = project.map(PathBuf::from);
+        s.git = git;
+        s
+    }
+
+    #[test]
+    fn what_the_provider_recorded_is_never_overwritten() {
+        // Claude Code writes the branch that was checked out *during* the
+        // session. Detection runs afterwards, possibly days later and on a
+        // different branch. History wins.
+        let mut session = session_with(
+            Some("/definitely/not/a/repository"),
+            Some(GitContext {
+                branch: Some("security/143-refresh-token-rotation".into()),
+                ..GitContext::default()
+            }),
+        );
+        add_repository(&mut session);
+
+        assert_eq!(
+            session.git.and_then(|g| g.branch).as_deref(),
+            Some("security/143-refresh-token-rotation")
+        );
+    }
+
+    #[test]
+    fn a_session_outside_a_repository_gains_nothing() {
+        let mut session = session_with(Some("/definitely/not/a/repository"), None);
+        add_repository(&mut session);
+        // Nothing detected, so nothing invented.
+        assert!(session.git.is_none() || session.git.as_ref().is_some_and(GitContext::is_empty));
+    }
+
+    #[test]
+    fn a_session_with_no_project_gains_nothing() {
+        let mut session = session_with(None, None);
+        add_repository(&mut session);
+        assert!(session.git.is_none());
+    }
+
+    #[test]
+    fn commits_are_still_not_filled_in() {
+        // Neither the provider nor detection can say which commit a session
+        // started or ended on. #71 works out a deterministic relationship.
+        let mut session = session_with(Some("."), None);
+        add_repository(&mut session);
+        if let Some(git) = session.git {
+            assert_eq!(git.commit_at_start, None);
+            assert_eq!(git.commit_at_end, None);
+        }
     }
 
     #[test]
