@@ -26,6 +26,8 @@ anyhow = "1.0.104"
 time = "0.3.45"
 thiserror = "2.0.20"
 recall-git = { version = "0.1.0", path = "../recall-git" }
+notify = "8.2.0"
+ctrlc = "3.5.2"
 
 [dev-dependencies]
 recall-core = { path = "../recall-core" }

@@ -15,6 +15,7 @@ mod sessions;
 mod show;
 mod sync;
 mod verify;
+mod watch;
 
 use anyhow::{Context, Result};
 
@@ -55,6 +56,15 @@ enum Command {
     Init,
     /// Discover and archive new AI sessions.
     Sync,
+    /// Archive sessions as they happen, until interrupted.
+    ///
+    /// Watches the directories the AI coding agents write their sessions to,
+    /// and archives each one once it has been quiet long enough to be finished.
+    /// A session still being written is left alone, so nothing is ever archived
+    /// half-finished.
+    ///
+    /// Press Ctrl-C to stop.
+    Watch,
     /// List archived sessions.
     Sessions {
         /// Rebuild the index from the archives before listing.
@@ -107,6 +117,7 @@ impl Command {
         match self {
             Command::Init => None,
             Command::Sync => None,
+            Command::Watch => None,
             Command::Sessions { .. } => None,
             Command::Show { .. } => None,
             Command::Verify { .. } => None,
@@ -118,6 +129,7 @@ impl Command {
         match self {
             Command::Init => "init",
             Command::Sync => "sync",
+            Command::Watch => "watch",
             Command::Sessions { .. } => "sessions",
             Command::Show { .. } => "show",
             Command::Verify { .. } => "verify",
@@ -160,6 +172,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Init => run_init(),
         Command::Sync => run_sync(),
+        Command::Watch => run_watch(),
         Command::Sessions { rebuild } => run_sessions(rebuild),
         Command::Show { session, summary } => run_show(&session, summary),
         Command::Verify { session } => run_verify(session.as_deref()),
@@ -245,47 +258,15 @@ fn run_sync() -> Result<()> {
     let project_root =
         std::env::current_dir().context("could not determine the current directory")?;
     let summary = sync::sync(&project_root)?;
-
-    if summary.found == 0 {
-        outln!("No AI sessions found for {}", project_root.display());
-        return Ok(());
-    }
-
-    outln!(
-        "{} session{} found: {} archived, {} already had",
-        summary.found,
-        if summary.found == 1 { "" } else { "s" },
-        summary.archived,
-        summary.already_had
-    );
-
-    if summary.in_progress > 0 {
-        outln!(
-            "  {} still being written — left for a later run, so nothing is archived half-finished",
-            summary.in_progress
-        );
-    }
-
-    if summary.had_failures() {
-        outln!("\n{} could not be archived:", summary.failures.len());
-        for failure in &summary.failures {
-            outln!(
-                "  {} {}: {}",
-                failure.provider,
-                failure.provider_session_id,
-                failure.reason
-            );
-        }
-    }
-
-    // Deliberately not an error. Everything reported above is in the archive;
-    // what is missing is the shortcut for finding it again, and the next sync
-    // notices and repairs it.
-    if let Some(problem) = &summary.index_problem {
-        outln!("\nThe index could not be brought up to date: {problem}");
-        outln!("  Archived sessions are unaffected. The next sync will retry.");
-    }
+    sync::report(&project_root, &summary);
     Ok(())
+}
+
+/// `recall watch`
+fn run_watch() -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    watch::watch(&project_root)
 }
 
 /// `recall init`

@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::exit::Problem;
 use crate::indexing;
+use crate::out::outln;
 use recall_adapters::{ClaudeCode, Codex};
 use recall_core::{
     Adapter, AdapterError, DiscoveredSession, GitContext, Session, SessionHeader, SessionId,
@@ -121,8 +122,58 @@ pub fn sync(project_root: &Path) -> Result<Summary> {
 /// Every adapter Recall knows about.
 ///
 /// Gemini is #44.
-fn adapters() -> Vec<Box<dyn Adapter>> {
+///
+/// Shared with `recall watch`, which takes the directories to watch from the
+/// adapters themselves rather than keeping its own list — one that would go
+/// stale the first time an adapter was added.
+pub fn adapters() -> Vec<Box<dyn Adapter>> {
     vec![Box::new(ClaudeCode::new()), Box::new(Codex::new())]
+}
+
+/// Tell the user what a pass did.
+///
+/// Shared by `recall sync` and `recall watch` so that the two describe the same
+/// outcome in the same words.
+pub fn report(project_root: &Path, summary: &Summary) {
+    if summary.found == 0 {
+        outln!("No AI sessions found for {}", project_root.display());
+        return;
+    }
+
+    outln!(
+        "{} session{} found: {} archived, {} already had",
+        summary.found,
+        if summary.found == 1 { "" } else { "s" },
+        summary.archived,
+        summary.already_had
+    );
+
+    if summary.in_progress > 0 {
+        outln!(
+            "  {} still being written — left for a later run, so nothing is archived half-finished",
+            summary.in_progress
+        );
+    }
+
+    if summary.had_failures() {
+        outln!("\n{} could not be archived:", summary.failures.len());
+        for failure in &summary.failures {
+            outln!(
+                "  {} {}: {}",
+                failure.provider,
+                failure.provider_session_id,
+                failure.reason
+            );
+        }
+    }
+
+    // Deliberately not an error. Everything reported above is in the archive;
+    // what is missing is the shortcut for finding it again, and the next sync
+    // notices and repairs it.
+    if let Some(problem) = &summary.index_problem {
+        outln!("\nThe index could not be brought up to date: {problem}");
+        outln!("  Archived sessions are unaffected. The next sync will retry.");
+    }
 }
 
 /// Archive one adapter's sessions.
