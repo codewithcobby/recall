@@ -68,11 +68,30 @@ fn an_unusable_command_line_is_two() {
 }
 
 #[test]
-fn a_command_that_does_nothing_yet_is_three() {
-    // Distinct from failure: the command is fine, it just is not built.
+fn nothing_reports_itself_as_not_built_any_more() {
+    // Code 3 means "the command is fine, it just is not built". `recall search`
+    // was the last command producing it, and Phase 10 implemented it.
+    //
+    // The code stays defined and documented — it is an interface, and the next
+    // command to be added before it works will use it. What must not happen is
+    // a shipped command still claiming it.
     let home = empty_home();
     let p = tempfile::tempdir().expect("project");
-    assert_eq!(code(p.path(), home.path(), &["search", "anything"]), 3);
+
+    for args in [
+        vec!["sync"],
+        vec!["sessions"],
+        vec!["verify"],
+        vec!["search", "anything"],
+        vec!["show", "abc"],
+    ] {
+        assert_ne!(
+            code(p.path(), home.path(), &args),
+            3,
+            "`recall {}` still reports itself unimplemented",
+            args.join(" ")
+        );
+    }
 }
 
 #[test]

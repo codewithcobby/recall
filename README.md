@@ -210,8 +210,16 @@ Once sessions are stored locally, Recall provides fast access to previous work:
 
 ```bash
 recall search "payment orchestrator"
-recall search "database round trips"
+recall search retry backoff
 ```
+
+Search matches the text of the conversations themselves. Terms must all appear, and
+near each other; quotes make a phrase. Case is ignored, and there are no wildcards or
+regular expressions — a query means exactly what it says.
+
+It reads the archives directly, so it keeps working if `index.db` is deleted, and no
+conversation text is ever copied into the database. See
+[`docs/index-and-archive.md`](docs/index-and-archive.md).
 
 Instead of manually navigating provider-specific session histories, you search across your
 project's archived AI sessions.

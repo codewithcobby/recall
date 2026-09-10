@@ -92,23 +92,35 @@ Two details of how they are written matter:
 - The rebuild test compares **rows, not printed output**. A column the listing
   does not display could still be lost, and reading the table would not show it.
 
-## Search will pressure this
+## Search: how the pressure was resolved
 
-Content search (#38) means matching text that lives in the archive. The obvious
-implementation puts that text in the database, which is rule 1 gone.
+Content search (#38) meant matching text that lives in the archive, and the
+obvious implementation — a full-text index in `index.db` — would have put that
+text in the database and ended rule 1.
 
-That is not forbidden, but it may not happen quietly. If searchable text is
-added to the index, this document is what has to change first — explicitly, with
-the consequences written down:
+**Search reads the archives instead.** The index is untouched and stays
+metadata-only. `recall search` does not use it at all, and works when it has
+been deleted.
 
-- The database stops being metadata-only, so **`.recall/index.db` starts holding
-  conversation content** and inherits the archive's handling in
-  [`SECURITY.md`](../.github/SECURITY.md): the same permissions, and the same
-  care about what may be printed or logged.
-- Rules 2, 3 and 5 must still hold. A full-text index over the archives is still
-  derived, still rebuildable, and still safe to delete. If a proposal cannot
-  keep those, it is proposing a second source of truth, and that is a different
-  and much larger change.
+The measurement that decided it, on real transcripts:
+
+| | 8 real sessions | 2000 sessions |
+|---|---|---|
+| archive | 5.4 MB | 16 MB |
+| FTS5 index over the text | 34.7 MB (6.5x) | 170 MB (12.5x) |
+| scanning the archives | ~90 ms | ~2.5 s |
+
+A full-text index would have made the "small derived cache" several times larger
+than the thing it indexes. Scanning costs time instead, and for the archives
+people actually have it is fast enough not to notice.
+
+This is a trade, not a free win: search is linear in the size of the archive, so
+a very large archive will feel it. A full-text index can be added later as an
+opt-in accelerator without changing what a search *means* — which is the part
+that would be hard to take back. If that happens, rule 1 has to be rewritten
+here first, and `index.db` inherits the archive's handling in
+[`SECURITY.md`](../.github/SECURITY.md). Rules 2, 3 and 5 would still have to
+hold.
 
 The boundary that actually matters is **derived versus original**, not
 *metadata versus content*. Rule 1 is the current, stricter position; rules 2, 3
