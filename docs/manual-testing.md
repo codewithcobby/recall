@@ -649,8 +649,12 @@ the project directory — in a worktree it is the worktree.
 
 Try it: note a session's branch, check out a different branch, then delete
 `.recall/` and re-sync. The archived branch must not change. Claude Code records
-what was true during the session; detection only fills in what the provider
-could not answer.
+what was true during the session.
+
+Detection fills in the **repository root** and nothing else. It does not supply
+a branch, even when the provider recorded none — see #163. A branch read at sync
+time describes the moment it was read, not the session, so a session that
+recorded no branch keeps none. That is the same rule commits already follow.
 
 ### 4. Cases that must not break a sync
 
@@ -685,7 +689,7 @@ HEAD unchanged, and the only thing `git status` should show is `.recall/`.
 
 - [ ] A session from a git project records its repository root
 - [ ] The branch is the one the session ran on, not the current one
-- [ ] A branch missing from the provider is filled in by detection
+- [ ] A branch missing from the provider stays missing, rather than being taken from the working tree
 - [ ] A project outside git archives cleanly with both fields absent
 - [ ] A detached HEAD records no branch
 - [ ] A repository with no commits still records its branch
@@ -972,8 +976,8 @@ Two things to look at.
 provider's own id, so a Codex session and a Claude Code session can never
 collide even if both agents used the same uuid.
 
-`BRANCH` is `—` on most Codex rows, but **not always** — see step 4, which is
-the subtle one in this phase.
+`BRANCH` is `—` on every Codex row, because Codex records none and nothing
+invents one — see step 4.
 
 ### 3. The command line is really there
 
@@ -989,40 +993,29 @@ empty string. `exit_code` is absent, because Codex reports the outcome in the
 tool's output rather than as a status, and inventing a `0` there would claim a
 success it never stated.
 
-### 4. Where a Codex session's branch comes from
+### 4. Git context is absent, and stays absent
 
-**Read this one carefully — it is the easiest thing here to misread.**
-
-The *adapter* supplies no git context at all. Claude Code puts `gitBranch` on
-every record; Codex records neither branch nor commit, so a Codex session
-arrives from the adapter with none.
-
-Sync then applies Phase 8's rule (#32): detection fills in only what the
-provider could not answer. For Claude Code that is almost always just the
-repository root. For Codex it is the branch too — and detection runs *now*, not
-when the session happened.
+Claude Code puts `gitBranch` on every record; Codex records neither branch nor
+commit. So a Codex session has no branch, and nothing supplies one.
 
 ```bash
 recall show <a-codex-id> --summary
 ```
 
-So on a Codex session whose project is a git repository, `branch` is **the
-branch that repository is checked out on today**, not the one the session ran
-on. A session from July can show today's branch. Where the project is not a git
-repository, branch stays `—`.
+`repo` is present — the repository root is a fact about the path, and does not
+change with time. `branch` and the commits are absent.
 
-Confirm it for yourself rather than trusting the column:
+**This is what #163 fixed, and it is worth checking rather than assuming.**
+Sync used to fill a missing branch in from the working tree, which meant a Codex
+session from July was archived carrying whatever branch the repository sat on at
+sync time. Confirm the column is not doing that:
 
 ```bash
 git -C <the project path from --summary> branch --show-current
 ```
 
-If that matches what `recall show --summary` reported, the value came from
-detection, not from the session.
-
-Commits stay absent either way — neither the provider nor detection can say
-which commit a session started or ended on, and Phase 8 deliberately refuses to
-guess.
+A Codex session must show **no** branch, whatever that prints. If it shows the
+same value, detection is supplying it again and the regression is back.
 
 The model can be absent too, on a rollout with no `turn_context` record. 7 of
 the 24 sessions in the installation this was written against had none. `—` in
@@ -1084,8 +1077,7 @@ Search is provider-agnostic; a Codex session is just another archive to it.
 - [ ] `recall sessions` shows it with provider `codex`
 - [ ] Codex and Claude Code sessions coexist in one archive without colliding
 - [ ] A `command` event carries the real command line, with no invented exit code
-- [ ] Commits are absent on every Codex session
-- [ ] Any branch shown on a Codex session matches the repository's *current* branch, because detection supplied it rather than the session
+- [ ] Branch and commits are absent on every Codex session, even in a git repository
 - [ ] A session with no `turn_context` reports no model rather than guessing one
 - [ ] Reasoning summaries are archived; `encrypted_content` is not
 - [ ] Messages appear once, not twice
