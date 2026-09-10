@@ -90,12 +90,54 @@ working directory appear:
 `base_instructions` holds the full system prompt and is by far the largest field
 in the file.
 
+## What the adapter can and cannot supply
+
+| Recall's model | Codex | Where from |
+| --- | --- | --- |
+| User messages | yes | `message` with role `user` |
+| Assistant responses | yes | `message` with role `assistant` |
+| Tool calls and results | yes | `function_call` / `custom_tool_call` and their outputs |
+| Commands executed | yes | the `cmd` argument of an `exec_command` call |
+| Files read or modified | no | not recorded as file operations |
+| Start and end timestamps | yes | the envelope timestamp on the first and last record |
+| Model identifier | usually | `turn_context.model` |
+| Working directory | yes | `session_meta.cwd` |
+| Git branch or commit | no | not recorded at all |
+
+Two of these are worth stating plainly, because they differ from the first
+adapter.
+
+**Codex records the command line; Claude Code does not.** An `exec_command`
+call carries `cmd` as a string, so a `Command` event here names what actually
+ran. The Claude Code adapter has to leave that field empty and keep only what
+the command printed. "What did this agent run against my machine" is therefore
+answerable for Codex sessions in a way it is not for Claude Code ones.
+
+**Codex records no git context; Claude Code does.** Claude Code puts
+`gitBranch` on every record. Codex has no equivalent, so these sessions carry no
+`GitContext` at all rather than a half-filled one. #32 derives repository state
+from the repository itself, which is the right place for it.
+
+The model is missing on 7 of the 24 sessions in the sample, because those
+rollouts contain no `turn_context` record. That is reported as absent rather
+than filled in from a neighbouring session.
+
+`event_msg` records are not archived. They mirror the `response_item` stream for
+Codex's own interface, and keeping both would store every message twice.
+`encrypted_content` on a `reasoning` record is also dropped: it is opaque, it is
+the largest field on the record, and nobody — Recall included — can read it
+back. The reasoning *summary* beside it is kept.
+
 ## Stability
 
-Records seen in this installation span `cli_version` 0.146.0 to 0.152.1 within
-the same tree, so a single history mixes formats across releases. The adapter
-therefore names only the fields it uses and ignores the rest: a new record type,
-a new payload type, or a new field must cost a release note rather than the
-user's archive.
+Rollouts in this installation were written by `cli_version` 0.42.0-alpha.3
+through 0.152.1 — the oldest is from 2025 and still sits in the same tree. **A
+single history mixes formats across a year of releases**, so tolerating the
+unfamiliar is the normal case here, not an edge case.
 
-Parsing and the mapping onto Recall's session model are #42.
+The adapter therefore names only the fields it uses and ignores the rest. An
+unrecognised record type is skipped; an unrecognised transcript item is kept as
+`other` under whatever name Codex gave it, so a release that adds one costs a
+release note rather than the user's archive.
+
+Fixtures and their tests are #43.

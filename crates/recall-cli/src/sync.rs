@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::exit::Problem;
 use crate::indexing;
-use recall_adapters::ClaudeCode;
+use recall_adapters::{ClaudeCode, Codex};
 use recall_core::{
     Adapter, AdapterError, DiscoveredSession, GitContext, Session, SessionHeader, SessionId,
 };
@@ -120,9 +120,9 @@ pub fn sync(project_root: &Path) -> Result<Summary> {
 
 /// Every adapter Recall knows about.
 ///
-/// Codex is #40, Gemini #44.
+/// Gemini is #44.
 fn adapters() -> Vec<Box<dyn Adapter>> {
-    vec![Box::new(ClaudeCode::new())]
+    vec![Box::new(ClaudeCode::new()), Box::new(Codex::new())]
 }
 
 /// Archive one adapter's sessions.

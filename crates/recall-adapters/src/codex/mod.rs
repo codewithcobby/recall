@@ -18,7 +18,11 @@
 //! Verified against Codex CLI 0.152.1. The record format is documented in
 //! `docs/providers/codex.md`.
 //!
-//! Parsing and normalization land in #42, fixtures in #43.
+//! Fixtures and their tests land in #43.
+
+pub mod normalize;
+pub mod parse;
+pub mod record;
 
 use std::fs;
 use std::io;
@@ -144,13 +148,29 @@ impl Adapter for Codex {
     }
 
     fn load(&self, discovered: &DiscoveredSession) -> Result<Session, AdapterError> {
-        // Parsing is #42. Until then a discovered rollout can be found but not
-        // read, and saying so plainly is better than handing back a session
-        // invented out of the little discovery happens to know.
-        Err(AdapterError::Empty {
-            provider: self.provider.clone(),
-            provider_session_id: discovered.provider_session_id.clone(),
-        })
+        // One rollout is one session, so unlike Claude Code there is nothing to
+        // merge — `additional_paths` is always empty for this provider.
+        let parsed = parse::parse_file(
+            &self.provider,
+            &discovered.provider_session_id,
+            &discovered.path,
+        )?;
+
+        normalize::normalize(
+            &self.provider,
+            &discovered.provider_session_id,
+            discovered.project.clone(),
+            &parsed,
+        )
+    }
+
+    fn provider_version(&self, path: &Path) -> Option<String> {
+        // Recorded once, on the session header.
+        let parsed = parse::parse_file(&self.provider, "", path).ok()?;
+        parsed
+            .records
+            .iter()
+            .find_map(|r| r.session_meta()?.cli_version)
     }
 }
 
@@ -233,6 +253,9 @@ const HEADER_SEARCH_LINES: usize = 8;
 /// record Codex writes first. Nothing in the path says which project a session
 /// belongs to, so unlike Claude Code there is no directory name to fall back
 /// on — this is the only source.
+///
+/// Only the opening lines are read, never the transcript: discovery reports
+/// what exists, and `load` is what understands it.
 fn opening_metadata(path: &Path) -> OpeningMetadata {
     let mut meta = OpeningMetadata::default();
     let Ok(file) = fs::File::open(path) else {
@@ -245,37 +268,20 @@ fn opening_metadata(path: &Path) -> OpeningMetadata {
         if line.is_empty() {
             continue;
         }
-        // Deliberately not the full record type: this needs two fields, and
-        // the cheapest possible read of them. Parsing properly is #42.
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        let Ok(record) = serde_json::from_str::<record::Record>(line) else {
             continue;
         };
-        if value.get("type").and_then(|t| t.as_str()) != Some(SESSION_META_RECORD) {
-            continue;
-        }
-        let Some(payload) = value.get("payload") else {
+        let Some(header) = record.session_meta() else {
             continue;
         };
 
-        meta.session_id = payload
-            .get("session_id")
-            .or_else(|| payload.get("id"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        meta.cwd = payload
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
+        meta.session_id = header.identifier().map(str::to_string);
+        meta.cwd = header.cwd.filter(|c| !c.is_empty()).map(PathBuf::from);
         break;
     }
 
     meta
 }
-
-/// The record type carrying a session's header.
-const SESSION_META_RECORD: &str = "session_meta";
 
 /// How many hyphen-separated groups a uuid has.
 const UUID_GROUPS: usize = 5;
