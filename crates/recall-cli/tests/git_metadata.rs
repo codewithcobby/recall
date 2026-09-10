@@ -126,19 +126,29 @@ fn the_branch_recorded_during_the_session_survives_a_later_checkout() {
 }
 
 #[test]
-fn detection_fills_a_branch_the_provider_did_not_record() {
+fn a_branch_the_provider_did_not_record_is_not_invented_from_the_working_tree() {
+    // #163. Detection runs at sync time, so the branch it sees is the one
+    // checked out *now* — which says nothing about when the session ran.
+    // Filling it in made a session claim a branch it never ran on.
+    //
+    // This went unnoticed while every provider recorded a branch on every
+    // record. A provider that records none makes it happen every time.
     let home = tempfile::tempdir().expect("home");
     let (_p, root) = repo_project();
-    git(&root, &["checkout", "--quiet", "-b", "detected-branch"]);
+    git(&root, &["checkout", "--quiet", "-b", "branch-at-sync-time"]);
     claude_session(home.path(), &root, "s", None);
 
     recall_in(&root, home.path(), &["init"]);
     recall_in(&root, home.path(), &["sync"]);
 
+    let git_context = archived_git(&root);
     assert_eq!(
-        archived_git(&root).branch.as_deref(),
-        Some("detected-branch"),
-        "nothing filled in the missing branch"
+        git_context.branch, None,
+        "the branch checked out at sync time was recorded as the session's"
+    );
+    assert!(
+        git_context.repository.is_some(),
+        "the repository root should still be detected — it does not change with time"
     );
 }
 
@@ -183,7 +193,10 @@ fn a_detached_head_records_no_branch() {
 }
 
 #[test]
-fn a_repository_with_no_commits_still_records_its_branch() {
+fn a_repository_with_no_commits_is_still_recorded_as_the_repository() {
+    // An unborn branch has a name, and `recall_git::branch` reports it — but a
+    // session that recorded no branch still gets none, same as anywhere else
+    // (#163). What detection contributes here is the repository root.
     let home = tempfile::tempdir().expect("home");
     let dir = tempfile::tempdir().expect("project");
     let root = dir.path().canonicalize().expect("canonical");
@@ -194,7 +207,11 @@ fn a_repository_with_no_commits_still_records_its_branch() {
     recall_in(&root, home.path(), &["sync"]);
 
     let git_context = archived_git(&root);
-    assert_eq!(git_context.branch.as_deref(), Some("main"));
+    assert!(
+        git_context.repository.is_some(),
+        "the repository should be recorded even with no commits"
+    );
+    assert_eq!(git_context.branch, None);
     assert_eq!(git_context.commit_at_start, None, "a commit was invented");
 }
 

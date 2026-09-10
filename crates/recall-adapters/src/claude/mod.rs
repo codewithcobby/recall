@@ -26,7 +26,8 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use recall_core::{Adapter, AdapterError, DiscoveredSession, Provider, Session};
-use time::OffsetDateTime;
+
+use crate::local::{home_directory, modified_at, read_directory};
 
 /// The provider name Claude Code sessions are recorded under.
 pub const PROVIDER: &str = "claude-code";
@@ -198,35 +199,6 @@ fn subagent_transcripts(
     Ok(found)
 }
 
-/// List a directory, treating "not there" as empty rather than as a failure.
-///
-/// A missing directory means Claude Code is not installed, or has never run in
-/// any project. Both are ordinary conditions during a sync.
-fn read_directory(dir: &Path) -> Result<Vec<PathBuf>, AdapterError> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        // Unreadable is different from absent, and worth saying so.
-        Err(source) => {
-            return Err(AdapterError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })
-        }
-    };
-
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| AdapterError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        paths.push(entry.path());
-    }
-    paths.sort();
-    Ok(paths)
-}
-
 /// How many lines to read looking for the working directory.
 ///
 /// Every content record carries `cwd`, but a session can open with Claude
@@ -283,38 +255,6 @@ fn project_from_directory_name(dir: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(name.replace('-', "/")))
-}
-
-/// When the file was last written, if the filesystem will say.
-fn modified_at(path: &Path) -> Option<OffsetDateTime> {
-    fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()
-        .and_then(|t| OffsetDateTime::from(t).into())
-}
-
-/// The user's home directory.
-///
-/// Resolved from the environment rather than by walking anywhere: Recall never
-/// searches for a provider's files speculatively.
-fn home_directory() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .or_else(|| {
-                let drive = std::env::var_os("HOMEDRIVE")?;
-                let path = std::env::var_os("HOMEPATH")?;
-                let mut home = PathBuf::from(drive);
-                home.push(path);
-                Some(home)
-            })
-    }
 }
 
 #[cfg(test)]

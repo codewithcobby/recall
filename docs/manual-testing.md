@@ -649,8 +649,12 @@ the project directory — in a worktree it is the worktree.
 
 Try it: note a session's branch, check out a different branch, then delete
 `.recall/` and re-sync. The archived branch must not change. Claude Code records
-what was true during the session; detection only fills in what the provider
-could not answer.
+what was true during the session.
+
+Detection fills in the **repository root** and nothing else. It does not supply
+a branch, even when the provider recorded none — see #163. A branch read at sync
+time describes the moment it was read, not the session, so a session that
+recorded no branch keeps none. That is the same rule commits already follow.
 
 ### 4. Cases that must not break a sync
 
@@ -685,7 +689,7 @@ HEAD unchanged, and the only thing `git status` should show is `.recall/`.
 
 - [ ] A session from a git project records its repository root
 - [ ] The branch is the one the session ran on, not the current one
-- [ ] A branch missing from the provider is filled in by detection
+- [ ] A branch missing from the provider stays missing, rather than being taken from the working tree
 - [ ] A project outside git archives cleanly with both fields absent
 - [ ] A detached HEAD records no branch
 - [ ] A repository with no commits still records its branch
@@ -920,3 +924,163 @@ number of matches. Roughly 90 ms on a 5.4 MB archive and 2.5 s on a 16 MB one.
 - [ ] An empty query is refused with exit 2
 - [ ] Search still works after deleting `index.db`
 - [ ] A damaged archive is reported and the rest are still searched
+
+---
+
+## Phase 11 — the Codex adapter
+
+Implemented by #40, #41, #42 and #43.
+
+The first phase with a second provider in it. Most of what follows is checking
+that Codex sessions behave like any other session — and that the two places
+Codex genuinely differs from Claude Code are handled honestly rather than
+papered over.
+
+Codex keeps its history at `~/.codex/sessions/<YYYY>/<MM>/<DD>/`, partitioned by
+date rather than by project. Nothing in that path says which repository a
+session ran against, so a session is matched to a project by the `cwd` recorded
+inside the rollout, exactly as Phase 6 describes.
+
+### 1. Sync a project you have used Codex in
+
+```bash
+cd /a/project/you/have/used/codex/in
+recall init
+recall sync
+```
+
+Expect the usual `N sessions found: N archived, 0 already had`.
+
+If it says `No AI sessions found`, the rollouts Codex has do not record this
+directory as their working directory. To find one that does:
+
+```bash
+grep -l -m1 '"cwd":"'"$PWD"'"' ~/.codex/sessions/*/*/*/*.jsonl
+```
+
+### 2. Both providers land in the same archive
+
+```bash
+recall sessions
+```
+
+```text
+ID        STARTED           EVENTS  PROVIDER     MODEL          BRANCH
+9f2c1d40  2026-08-03 13:10      12  codex        gpt-5.5        —
+2a0a31a8  2026-08-01 08:41    2450  claude-code  claude-opus-5  fix/198-x
+```
+
+Two things to look at.
+
+`PROVIDER` says `codex`. Session ids are derived from the provider *and* the
+provider's own id, so a Codex session and a Claude Code session can never
+collide even if both agents used the same uuid.
+
+`BRANCH` is `—` on every Codex row, because Codex records none and nothing
+invents one — see step 4.
+
+### 3. The command line is really there
+
+**The thing Codex can do that Claude Code cannot.** Claude Code records what a
+command printed but not what was run; Codex records the command itself.
+
+```bash
+recall show <a-codex-id> | grep -A2 'command'
+```
+
+A `command` event names the actual invocation — `cargo test --workspace`, not an
+empty string. `exit_code` is absent, because Codex reports the outcome in the
+tool's output rather than as a status, and inventing a `0` there would claim a
+success it never stated.
+
+### 4. Git context is absent, and stays absent
+
+Claude Code puts `gitBranch` on every record; Codex records neither branch nor
+commit. So a Codex session has no branch, and nothing supplies one.
+
+```bash
+recall show <a-codex-id> --summary
+```
+
+`repo` is present — the repository root is a fact about the path, and does not
+change with time. `branch` and the commits are absent.
+
+**This is what #163 fixed, and it is worth checking rather than assuming.**
+Sync used to fill a missing branch in from the working tree, which meant a Codex
+session from July was archived carrying whatever branch the repository sat on at
+sync time. Confirm the column is not doing that:
+
+```bash
+git -C <the project path from --summary> branch --show-current
+```
+
+A Codex session must show **no** branch, whatever that prints. If it shows the
+same value, detection is supplying it again and the regression is back.
+
+The model can be absent too, on a rollout with no `turn_context` record. 7 of
+the 24 sessions in the installation this was written against had none. `—` in
+that column is the honest answer.
+
+### 5. Reasoning is kept; the unreadable part is not
+
+```bash
+recall show <a-codex-id> | grep -c 'reasoning'
+```
+
+Codex records a readable reasoning summary next to an `encrypted_content` blob.
+The summary is archived. The blob is not — it is opaque, it is the largest field
+on the record, and nobody, Recall included, can ever read it back.
+
+### 6. The same conversation is not archived twice
+
+Codex writes each message twice: once as the transcript (`response_item`) and
+once as an interface event (`event_msg`) for its own UI. Only the first is
+archived.
+
+```bash
+recall show <a-codex-id> | grep -c 'assistant'
+```
+
+Compare against what you actually said and were told in that session. A number
+roughly double what you remember would mean the bookkeeping stream is being
+archived as conversation.
+
+### 7. A rollout being written right now
+
+Run `recall sync` while a Codex session is open in the project. Same rule as
+Phase 6: it is reported as still being written and left for a later run, so
+nothing is archived half-finished.
+
+### 8. Codex's files are never touched
+
+```bash
+ls -lR ~/.codex/sessions | md5
+recall sync
+ls -lR ~/.codex/sessions | md5
+```
+
+Identical. Recall reads Codex's history and never writes to it — including the
+`sessions/` tree, which it walks to a bounded depth and never follows a symlink
+out of.
+
+### 9. Search reaches Codex sessions too
+
+```bash
+recall search "something you said to codex"
+```
+
+Search is provider-agnostic; a Codex session is just another archive to it.
+
+### Phase 11 checklist
+
+- [ ] A Codex session from this project is archived
+- [ ] `recall sessions` shows it with provider `codex`
+- [ ] Codex and Claude Code sessions coexist in one archive without colliding
+- [ ] A `command` event carries the real command line, with no invented exit code
+- [ ] Branch and commits are absent on every Codex session, even in a git repository
+- [ ] A session with no `turn_context` reports no model rather than guessing one
+- [ ] Reasoning summaries are archived; `encrypted_content` is not
+- [ ] Messages appear once, not twice
+- [ ] A session still being written is reported and not archived
+- [ ] `~/.codex` is unchanged after a sync
+- [ ] `recall search` finds text from a Codex session
