@@ -9,6 +9,7 @@
 pub mod adapter;
 pub mod event;
 pub mod format;
+pub mod search;
 pub mod session;
 
 pub use adapter::{Adapter, AdapterError, DiscoveredSession};
@@ -17,4 +18,5 @@ pub use format::{
     read_header, read_session, write_session, FormatError, SessionHeader, SessionReader,
     SESSION_FORMAT_VERSION,
 };
+pub use search::{find_ignoring_case, snippet, Query, QueryError, PROXIMITY};
 pub use session::{GitContext, Provider, ProviderError, Session, SessionId};

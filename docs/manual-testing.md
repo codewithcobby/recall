@@ -809,3 +809,114 @@ and querying the database is not. Measured on 2000 archived sessions totalling
 - [ ] A broken index does not stop `recall sync` archiving
 - [ ] No transcript text appears in `index.db`
 - [ ] `recall sessions` is materially faster than `--rebuild`
+
+---
+
+## Phase 10 — `recall search`
+
+Search matches the text of the conversations themselves. It reads the archives
+directly, so there is no index to prepare and nothing to keep in sync.
+
+Start from a project with sessions already archived (`recall sync`).
+
+### 1. Find something you remember
+
+```bash
+recall search "some phrase you remember"
+```
+
+You get the sessions that matched, newest first, with a short piece of the
+surrounding text and the kind of event it came from. The ids are the ones
+`recall show` takes.
+
+### 2. Two words means both, close together
+
+```bash
+recall search retry backoff
+```
+
+Both words have to appear, and near each other. That second part matters: one
+tool result can be a whole file, and without it a word on line 3 would match a
+word on line 900 and give you pages of noise.
+
+### 3. Quotes mean the exact phrase
+
+```bash
+recall search "refresh token"
+```
+
+Fewer, tighter results than `recall search refresh token`. Use quotes when you
+know the wording.
+
+### 4. Nothing found is a normal answer
+
+```bash
+recall search zzzznotpresent
+echo $?
+```
+
+Says nothing matched, exits **0**. Finding nothing is an answer, not a failure.
+
+### 5. Special characters are just characters
+
+```bash
+recall search "100%"
+recall search "a*b"
+recall search "; DROP TABLE sessions; --"
+```
+
+Each is searched for literally. There are no wildcards and no regular
+expressions, and nothing is ever run as a query — so the last one just doesn't
+match anything, and your archive is untouched.
+
+### 6. An empty query is refused
+
+```bash
+recall search ""
+echo $?
+```
+
+Exits **2** with a message. An empty query would match everything, which is
+never what anyone meant.
+
+### 7. It works without the index
+
+```bash
+rm .recall/index.db
+recall search "some phrase you remember"
+```
+
+Same results. Search never reads `index.db` — that is why no conversation text
+is stored there. Run `recall sync` afterwards to put the index back for
+`recall sessions`.
+
+### 8. A damaged archive is reported, not skipped
+
+```bash
+echo "broken" > .recall/sessions/<year>/<month>/<day>/<some-id>.zst
+recall search "some phrase you remember"
+```
+
+The other sessions are still searched, and the damaged one is listed at the
+bottom with a pointer to `recall verify`. Restore it with `recall sync` after
+deleting the broken file.
+
+### 9. Speed
+
+```bash
+time recall search "anything"
+```
+
+Search reads every archive, so it scales with the size of the archive, not the
+number of matches. Roughly 90 ms on a 5.4 MB archive and 2.5 s on a 16 MB one.
+
+### Phase 10 checklist
+
+- [ ] A known phrase finds the right sessions
+- [ ] Two words require both, near each other
+- [ ] Quotes match the exact phrase
+- [ ] No match says so and exits 0
+- [ ] `%`, `*` and SQL text are matched literally and change nothing
+- [ ] An empty query is refused with exit 2
+- [ ] Search still works after deleting `index.db`
+- [ ] A damaged archive is reported and the rest are still searched

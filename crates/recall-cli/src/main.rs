@@ -10,6 +10,7 @@ use std::process::ExitCode;
 mod exit;
 mod indexing;
 mod out;
+mod search;
 mod sessions;
 mod show;
 mod sync;
@@ -81,9 +82,22 @@ enum Command {
         session: Option<String>,
     },
     /// Search archived sessions.
+    ///
+    /// Matches literal text in the transcripts: terms are combined with "and",
+    /// quotes group words into a phrase, and case is ignored. There are no
+    /// wildcards and no regular expressions, so a query means exactly what it
+    /// says.
+    ///
+    /// Reads the archives rather than the index, so it works even when
+    /// `.recall/index.db` has been deleted.
     Search {
         /// What to look for.
-        query: String,
+        ///
+        /// Several words can be given without quoting — `recall search retry
+        /// backoff` is the same as `recall search "retry backoff"`. Quote a
+        /// phrase when you want those words in that order.
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
     },
 }
 
@@ -96,7 +110,7 @@ impl Command {
             Command::Sessions { .. } => None,
             Command::Show { .. } => None,
             Command::Verify { .. } => None,
-            Command::Search { .. } => Some(38),
+            Command::Search { .. } => None,
         }
     }
 
@@ -149,8 +163,7 @@ fn main() -> ExitCode {
         Command::Sessions { rebuild } => run_sessions(rebuild),
         Command::Show { session, summary } => run_show(&session, summary),
         Command::Verify { session } => run_verify(session.as_deref()),
-        // Every other command returned above.
-        _ => unreachable!("handled by the tracking-issue branch"),
+        Command::Search { query } => run_search(&query.join(" ")),
     };
 
     match result {
@@ -175,6 +188,13 @@ fn run_sessions(rebuild: bool) -> Result<()> {
     let project_root =
         std::env::current_dir().context("could not determine the current directory")?;
     sessions::list(&project_root, rebuild)
+}
+
+/// `recall search`
+fn run_search(query: &str) -> Result<()> {
+    let project_root =
+        std::env::current_dir().context("could not determine the current directory")?;
+    search::search(&project_root, query)
 }
 
 /// `recall show`

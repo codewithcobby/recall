@@ -58,15 +58,28 @@ fn unknown_command_is_rejected() {
 }
 
 #[test]
-fn unimplemented_commands_do_not_exit_zero() {
-    // Exiting 0 would tell a script the work was done. `search` is #38.
-    let out = recall(&["search", "anything"]);
-    assert!(!out.status.success(), "`recall search` exited zero");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("not implemented yet"),
-        "`recall search` said: {stderr}"
-    );
+fn every_command_is_implemented() {
+    // This used to assert that `recall search` reported "not implemented yet"
+    // and exited non-zero, so a script could never mistake a stub for work
+    // done. Phase 10 implemented it, and it was the last one. The guard now
+    // points the other way: no command may report itself unimplemented.
+    let project = tempfile::tempdir().expect("temp dir");
+    assert!(recall_in(project.path(), &["init"]).status.success());
+
+    for args in [
+        vec!["sync"],
+        vec!["sessions"],
+        vec!["verify"],
+        vec!["search", "anything"],
+    ] {
+        let out = recall_in(project.path(), &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("not implemented"),
+            "`recall {}` is still a stub: {stderr}",
+            args.join(" ")
+        );
+    }
 }
 
 #[test]
