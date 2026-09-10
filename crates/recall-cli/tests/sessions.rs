@@ -116,28 +116,6 @@ fn the_answer_comes_from_the_index_not_the_archive_tree() {
 }
 
 #[test]
-fn a_rebuilt_index_produces_the_same_listing() {
-    // The property that makes the database disposable: the archives are enough
-    // to reconstruct exactly what the index was answering with.
-    let (home, _project, root) = synced(3);
-    let before = stdout(&recall_in(&root, home.path(), &["sessions"]));
-
-    let rebuilt = recall_in(&root, home.path(), &["sessions", "--rebuild"]);
-    assert!(rebuilt.status.success(), "{rebuilt:?}");
-    let after = stdout(&rebuilt);
-
-    // The rebuild adds a line saying what it did; the table below it must match.
-    let table = after
-        .split_once("\n\n")
-        .map(|(_, rest)| rest.to_string())
-        .unwrap_or(after);
-    assert_eq!(
-        table, before,
-        "the rebuilt index listed something different"
-    );
-}
-
-#[test]
 fn a_deleted_index_is_rebuilt_and_the_user_is_told() {
     // Silence here would look like a hang: this listing opens every archive.
     let (home, _project, root) = synced(3);

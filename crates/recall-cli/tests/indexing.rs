@@ -3,6 +3,8 @@
 //! These tests go through the binary and then look at `.recall/index.db`
 //! directly. Reading it through the same code that wrote it would agree with
 //! itself no matter what landed on disk.
+//!
+//! The index/archive boundary itself is held in `boundary.rs`.
 
 use std::fs;
 use std::path::Path;
@@ -178,53 +180,6 @@ fn an_index_that_fell_behind_is_caught_up() {
 
     assert!(recall_in(&root, home.path(), &["sync"]).status.success());
     assert_eq!(open(&root).count().expect("count"), 3);
-}
-
-#[test]
-fn a_corrupt_index_does_not_cost_the_user_a_session() {
-    // The rule the whole design turns on: the archive wins. A database full of
-    // rubbish must not stop sync from preserving a conversation.
-    let home = tempfile::tempdir().expect("home");
-    let project = tempfile::tempdir().expect("project");
-    let root = project.path().canonicalize().expect("canonical");
-
-    assert!(recall_in(&root, home.path(), &["init"]).status.success());
-    fs::write(root.join(".recall/index.db"), b"not a database").expect("corrupt");
-    claude_session(home.path(), &root, "abc", "2026-09-08T12:00:00.000Z", "hi");
-
-    let out = recall_in(&root, home.path(), &["sync"]);
-    assert!(out.status.success(), "sync failed: {out:?}");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("1 archived"), "not archived: {stdout}");
-
-    // And the index recovered rather than staying broken.
-    assert_eq!(open(&root).count().expect("count"), 1);
-}
-
-#[test]
-fn the_index_never_holds_conversation_content() {
-    // The boundary #37 documents. Checked against the bytes on disk, because
-    // that is where it would leak.
-    let home = tempfile::tempdir().expect("home");
-    let project = tempfile::tempdir().expect("project");
-    let root = project.path().canonicalize().expect("canonical");
-
-    assert!(recall_in(&root, home.path(), &["init"]).status.success());
-    let secret = "correct-horse-battery-staple";
-    claude_session(
-        home.path(),
-        &root,
-        "abc",
-        "2026-09-08T12:00:00.000Z",
-        secret,
-    );
-    assert!(recall_in(&root, home.path(), &["sync"]).status.success());
-
-    let bytes = fs::read(root.join(".recall/index.db")).expect("read index");
-    assert!(
-        !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
-        "the transcript reached the database"
-    );
 }
 
 #[cfg(unix)]

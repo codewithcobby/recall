@@ -433,6 +433,7 @@ dependencies = [
  "recall-git",
  "recall-index",
  "recall-store",
+ "rusqlite",
  "tempfile",
  "thiserror",
  "time",

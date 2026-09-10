@@ -868,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_holds_no_conversation_content() {
+    fn index_holds_no_conversation_content() {
         // The boundary #37 documents. Events are the archive's job; a session
         // handed here with a transcript must not leave any of it behind.
         let (dir, mut index) = index();
