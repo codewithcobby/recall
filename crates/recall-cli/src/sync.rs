@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::exit::Problem;
 use crate::indexing;
-use recall_adapters::ClaudeCode;
+use recall_adapters::{ClaudeCode, Codex};
 use recall_core::{
     Adapter, AdapterError, DiscoveredSession, GitContext, Session, SessionHeader, SessionId,
 };
@@ -120,9 +120,9 @@ pub fn sync(project_root: &Path) -> Result<Summary> {
 
 /// Every adapter Recall knows about.
 ///
-/// Codex is #40, Gemini #44.
+/// Gemini is #44.
 fn adapters() -> Vec<Box<dyn Adapter>> {
-    vec![Box::new(ClaudeCode::new())]
+    vec![Box::new(ClaudeCode::new()), Box::new(Codex::new())]
 }
 
 /// Archive one adapter's sessions.
@@ -255,11 +255,21 @@ fn archive_one(
 /// The provider is the authority on everything it recorded. Claude Code writes
 /// the branch that was checked out *during* the session; detection here runs
 /// afterwards, potentially days later and on a different branch entirely. So
-/// what the adapter supplied is never overwritten — this only fills what it
-/// could not answer.
+/// what the adapter supplied is never overwritten.
 ///
-/// In practice that means the repository root, which no provider records, and
-/// the branch when the provider had none.
+/// What detection adds is the repository root, which no provider records. That
+/// is a fact about the path and does not change with time, so looking it up
+/// later still gives the right answer.
+///
+/// **The branch is deliberately not filled in** (#163). A branch is only ever a
+/// fact about the moment it was read, and a sync runs after the session ended.
+/// Filling it from detection made a session claim a branch it never ran on —
+/// invisible while the only provider recorded one on every record, and true of
+/// every Codex session once a provider that records none arrived.
+///
+/// This is the same rule commits already follow, for the same reason: neither
+/// the provider nor detection can say which commit a session started or ended
+/// on, so nothing is invented. See recall_git's `commits_are_not_guessed`.
 fn add_repository(session: &mut Session) {
     let Some(project) = session.project.as_deref() else {
         return;
@@ -272,10 +282,8 @@ fn add_repository(session: &mut Session) {
     let existing = session.git.take().unwrap_or_default();
     session.git = Some(GitContext {
         repository: existing.repository.or(detected.repository),
-        // What was true during the session beats what is true now.
-        branch: existing.branch.or(detected.branch),
-        // Neither the provider nor detection can say which commit a session
-        // started or ended on. See recall_git's `commits_are_not_guessed`.
+        // Only what the session itself recorded. Absent stays absent.
+        branch: existing.branch,
         commit_at_start: existing.commit_at_start,
         commit_at_end: existing.commit_at_end,
     });
@@ -468,6 +476,37 @@ mod tests {
         let mut session = session_with(None, None);
         add_repository(&mut session);
         assert!(session.git.is_none());
+    }
+
+    #[test]
+    fn a_session_that_recorded_no_branch_is_not_given_the_one_it_is_synced_on() {
+        // #163. A branch is a fact about the moment it was read, and a sync
+        // runs after the session ended — often much later. Filling it in made
+        // a July session claim whatever branch the repository sits on today.
+        //
+        // "." is this repository, which is on a real branch, so detection has
+        // something to offer here and must decline to use it.
+        let mut session = session_with(Some("."), None);
+        add_repository(&mut session);
+
+        assert_eq!(
+            session.git.as_ref().and_then(|g| g.branch.as_deref()),
+            None,
+            "a branch the session never recorded was invented from detection"
+        );
+    }
+
+    #[test]
+    fn the_repository_root_is_still_filled_in() {
+        // The half of detection that is sound: a path's repository does not
+        // change with time, so looking it up after the fact is still correct.
+        let mut session = session_with(Some("."), None);
+        add_repository(&mut session);
+
+        assert!(
+            session.git.as_ref().is_some_and(|g| g.repository.is_some()),
+            "the repository root should still be detected"
+        );
     }
 
     #[test]

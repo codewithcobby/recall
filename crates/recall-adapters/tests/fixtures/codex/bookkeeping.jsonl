@@ -1,0 +1,9 @@
+{"timestamp":"2026-08-03T13:10:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"019fc7bf-5907-7222-a195-000000000003","id":"019fc7bf-5907-7222-a195-000000000003","cwd":"/w/demo","cli_version":"0.152.1"}}
+{"timestamp":"2026-08-03T13:10:01.000Z","ordinal":1,"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":"2026-08-03T13:10:01.000Z","model_context_window":400000,"collaboration_mode_kind":"default"}}
+{"timestamp":"2026-08-03T13:10:02.000Z","ordinal":2,"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"the only real message"}]}}
+{"timestamp":"2026-08-03T13:10:03.000Z","ordinal":3,"type":"event_msg","payload":{"type":"item_completed","thread_id":"thread-1","turn_id":"turn-1","completed_at_ms":1785849672264,"item":{"type":"assistant_message","text":"the only real message"}}}
+{"timestamp":"2026-08-03T13:10:04.000Z","ordinal":4,"type":"event_msg","payload":{"type":"token_count","info":{"total_tokens":1200},"rate_limits":{"remaining":98}}}
+{"timestamp":"2026-08-03T13:10:05.000Z","ordinal":5,"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":"2026-08-03T13:10:05.000Z","last_agent_message":"the only real message"}}
+{"timestamp":"2026-08-03T13:10:06.000Z","ordinal":6,"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"mode":"default"}}}
+{"timestamp":"2026-08-03T13:10:07.000Z","ordinal":7,"type":"world_state","payload":{"full":true,"state":{"files_open":0}}}
+{"timestamp":"2026-08-03T13:10:08.000Z","ordinal":8,"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-2","reason":"interrupted","started_at":"2026-08-03T13:10:07.000Z","completed_at":"2026-08-03T13:10:08.000Z","duration_ms":1000}}

@@ -1,0 +1,6 @@
+{"timestamp":"2026-08-03T13:10:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"019fc7bf-5907-7222-a195-000000000005","id":"019fc7bf-5907-7222-a195-000000000005","cwd":"/w/demo","cli_version":"0.152.1"}}
+{"timestamp":"2026-08-03T13:10:01.000Z","ordinal":1,"type":"response_item","payload":{"type":"web_search_call","id":"ws-1","status":"completed","action":{"type":"search","query":"how to spell separate"}}}
+{"timestamp":"2026-08-03T13:10:02.000Z","ordinal":2,"type":"response_item","payload":{"type":"tool_search_call","call_id":"ts-1","id":"tsc-1","status":"completed","arguments":"{\"query\":\"formatter\"}","execution":{"mode":"local"}}}
+{"timestamp":"2026-08-03T13:10:03.000Z","ordinal":3,"type":"response_item","payload":{"type":"a_type_added_after_this_adapter_was_written","detail":"kept anyway"}}
+{"timestamp":"2026-08-03T13:10:04.000Z","ordinal":4,"type":"an_outer_type_from_a_later_release","payload":{"whatever":true}}
+{"timestamp":"2026-08-03T13:10:05.000Z","ordinal":5,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"still here"}],"a_field_from_a_later_release":true}}

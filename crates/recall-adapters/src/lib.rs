@@ -9,5 +9,8 @@
 //! has to exist in `recall-core` for an adapter to work, the trait is wrong.
 
 pub mod claude;
+pub mod codex;
+pub(crate) mod local;
 
 pub use claude::ClaudeCode;
+pub use codex::Codex;
