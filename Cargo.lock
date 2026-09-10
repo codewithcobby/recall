@@ -370,6 +370,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
+ "zstd",
 ]
 
 [[package]]

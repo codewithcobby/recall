@@ -30,3 +30,4 @@ recall-git = { version = "0.1.0", path = "../recall-git" }
 [dev-dependencies]
 recall-core = { path = "../recall-core" }
 tempfile = "3.27.0"
+zstd = "0.14.0"
