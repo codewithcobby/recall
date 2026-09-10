@@ -1,0 +1,7 @@
+{"timestamp":"2026-08-03T13:10:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"019fc7bf-5907-7222-a195-000000000002","id":"019fc7bf-5907-7222-a195-000000000002","cwd":"/w/demo","cli_version":"0.152.1"}}
+{"timestamp":"2026-08-03T13:10:01.000Z","ordinal":1,"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo test --workspace\",\"workdir\":\"/w/demo\",\"max_output_tokens\":10000,\"yield_time_ms\":60000}","call_id":"call-1","id":"fc-1"}}
+{"timestamp":"2026-08-03T13:10:05.000Z","ordinal":2,"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","id":"fco-1","output":"test result: ok. 12 passed; 0 failed"}}
+{"timestamp":"2026-08-03T13:10:06.000Z","ordinal":3,"type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"/w/demo/diagram.png\",\"detail\":\"high\"}","call_id":"call-2","id":"fc-2"}}
+{"timestamp":"2026-08-03T13:10:07.000Z","ordinal":4,"type":"response_item","payload":{"type":"function_call_output","call_id":"call-2","id":"fco-2","output":[{"type":"input_image","text":"a diagram of the pipeline"}]}}
+{"timestamp":"2026-08-03T13:10:08.000Z","ordinal":5,"type":"response_item","payload":{"type":"custom_tool_call","name":"js","input":{"code":"1 + 1","timeout_ms":5000},"call_id":"call-3","id":"ctc-1","status":"completed"}}
+{"timestamp":"2026-08-03T13:10:09.000Z","ordinal":6,"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-3","id":"ctco-1","output":"2"}}
