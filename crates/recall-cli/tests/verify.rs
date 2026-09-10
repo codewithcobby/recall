@@ -56,6 +56,37 @@ fn archives(root: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Break a session's transcript while leaving its header byte-identical.
+///
+/// Decompresses, corrupts a byte well past the first newline, and recompresses.
+/// Flipping a byte in the compressed file instead is a coin toss: the header is
+/// unique text that compresses poorly, so it occupies a large share of a small
+/// frame, and a randomly-placed flip lands inside it often enough to make a
+/// test fail on some machines and pass on others (#140).
+fn damage_the_body(archive: &Path) {
+    let raw = zstd::decode_all(fs::File::open(archive).expect("open")).expect("decompress");
+    let header_end = raw.iter().position(|b| *b == b'\n').expect("a header line") + 1;
+    assert!(
+        raw.len() > header_end + 16,
+        "the fixture has no transcript to damage"
+    );
+
+    let mut damaged = raw.clone();
+    // Comfortably inside the transcript, never the header.
+    let target = header_end + (raw.len() - header_end) / 2;
+    damaged[target] ^= 0xff;
+    assert_eq!(
+        &damaged[..header_end],
+        &raw[..header_end],
+        "the header was altered"
+    );
+
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 12).expect("encoder");
+    encoder.include_checksum(true).expect("checksum");
+    std::io::Write::write_all(&mut encoder, &damaged).expect("compress");
+    fs::write(archive, encoder.finish().expect("finish")).expect("write");
+}
+
 /// A project with `count` archived sessions.
 fn archived(count: usize) -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let home = tempfile::tempdir().expect("home");
@@ -87,11 +118,7 @@ fn corruption_after_the_header_is_caught_where_listing_is_blind() {
     // The exact gap this command exists to close.
     let (home, _p, root) = archived(3);
 
-    let archive = archives(&root).remove(1);
-    let mut bytes = fs::read(&archive).expect("read");
-    let middle = bytes.len() / 2;
-    bytes[middle] ^= 0xff;
-    fs::write(&archive, &bytes).expect("corrupt");
+    damage_the_body(&archives(&root).remove(1));
 
     // The listing cannot see it: the header is intact.
     let listed = recall_in(&root, home.path(), &["sessions"]);
@@ -115,11 +142,7 @@ fn corruption_after_the_header_is_caught_where_listing_is_blind() {
 #[test]
 fn the_reason_reaches_the_user() {
     let (home, _p, root) = archived(1);
-    let archive = archives(&root).remove(0);
-    let mut bytes = fs::read(&archive).expect("read");
-    let middle = bytes.len() / 2;
-    bytes[middle] ^= 0xff;
-    fs::write(&archive, &bytes).expect("corrupt");
+    damage_the_body(&archives(&root).remove(0));
 
     let out = recall_in(&root, home.path(), &["verify"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
