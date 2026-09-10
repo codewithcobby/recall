@@ -1084,3 +1084,127 @@ Search is provider-agnostic; a Codex session is just another archive to it.
 - [ ] A session still being written is reported and not archived
 - [ ] `~/.codex` is unchanged after a sync
 - [ ] `recall search` finds text from a Codex session
+
+---
+
+## Phase 13 — `recall watch`
+
+Implemented by #48, #49 and #50.
+
+`recall sync` only helps someone who remembers to run it. `recall watch` stays
+running and archives sessions as they finish.
+
+### 1. Start it
+
+```bash
+cd /a/project/you/use/an/agent/in
+recall init
+recall watch
+```
+
+Expect a catch-up pass first, then the directories it is watching:
+
+```text
+28 sessions found: 0 archived, 28 already had
+Watching /Users/me/.claude/projects
+Watching /Users/me/.codex/sessions
+Press Ctrl-C to stop.
+```
+
+One line per **installed** agent. An agent you do not have is not listed, and
+that is not an error.
+
+### 2. It catches up on what it missed
+
+Watch archives anything that settled while nothing was watching, before it
+starts watching. Prove it:
+
+```bash
+recall sessions | head -3      # note the newest
+rm -rf .recall && recall init  # throw the archive away
+recall watch                   # the first line archives everything again
+```
+
+### 3. It stops when you ask
+
+Press Ctrl-C. Expect `Stopped watching.` and exit code 0 — not a killed
+process:
+
+```bash
+recall watch ; echo "exit: $?"
+```
+
+`0`. A watcher that exits non-zero on a deliberate stop would break any script
+that supervises it.
+
+### 4. The wait is deliberate
+
+Start a session with an agent, then watch. **Nothing is archived while you are
+still talking to it**, and that is the point: archives are never rewritten, so
+capturing a conversation mid-flight would freeze its first half and lose the
+rest. `sync` leaves a file alone until it has been quiet for five minutes, and
+watch uses the same rule.
+
+So after finishing a session, expect it to appear within about five and a half
+minutes — not instantly. Quiet passes print nothing.
+
+### 5. Why it does not rely on filesystem events
+
+**Worth understanding, because the behaviour looks like a bug otherwise.**
+
+On macOS, FSEvents reports nothing for an append until the writing process
+closes the file. An agent that holds its transcript open for a whole
+conversation produces no events at all. This was measured, not assumed: a test
+appending to an open handle saw no event whatsoever until the handle was
+dropped.
+
+So watch also runs a pass every 30 seconds regardless of events. That sweep is
+the mechanism; events are what make it feel immediate when they do arrive.
+Watch would still archive every session with the event stream removed entirely,
+just less promptly.
+
+You can see this for yourself — the sweep alone is enough:
+
+```bash
+recall watch          # in one terminal
+# in another, wait for a finished session to age past five minutes
+```
+
+It lands without you touching anything.
+
+### 6. It is not a side door into the archive
+
+What watch writes is an ordinary session:
+
+```bash
+recall sessions       # it is listed
+recall verify         # it is readable
+recall search "..."   # it is searchable
+```
+
+And it refuses an uninitialized project exactly as `recall sync` does, without
+creating an archive as a side effect:
+
+```bash
+cd /tmp/not-a-recall-project
+recall watch          # refuses; no .recall/ is created
+```
+
+### 7. Two agents at once
+
+If you have both Claude Code and Codex, run a session in each and leave watch
+running. Both land in the same archive, under their own providers. Watch takes
+the directories from the adapters themselves, so an agent added later is
+watched without watch changing.
+
+### Phase 13 checklist
+
+- [ ] `recall watch` archives outstanding sessions before it starts watching
+- [ ] It names each installed agent's directory, and only those
+- [ ] Ctrl-C prints `Stopped watching.` and exits 0
+- [ ] A session still in progress is not archived
+- [ ] A finished session lands within roughly five and a half minutes
+- [ ] Passes that change nothing print nothing
+- [ ] What watch archives is listable, verifiable and searchable
+- [ ] `recall watch` in an uninitialized project refuses and creates no `.recall/`
+- [ ] Sessions from two different agents both land
