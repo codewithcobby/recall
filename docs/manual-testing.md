@@ -607,3 +607,87 @@ A person reads the message; a script reads the code. `recall --help` lists them.
 - [ ] `recall verify` reports a healthy archive as readable
 - [ ] `recall verify` catches damage that `recall sessions` cannot see, and exits 7
 - [ ] Exit codes match the table in `recall --help`
+
+---
+
+## Phase 8 — git awareness
+
+Implemented by #31, #32 and #33.
+
+Archived sessions now record which repository they ran in, alongside the branch
+the provider already gave them.
+
+### 1. Sync a project that is a git repository
+
+```bash
+cd /a/git/project/you/have/used/claude/code/in
+recall init && recall sync
+recall sessions
+```
+
+The `BRANCH` column should show real branch names.
+
+### 2. Look at one
+
+```bash
+recall show <id> --summary
+```
+
+```text
+project  /path/to/project
+repo     /path/to/project
+branch   fix/312-vendor-order
+events   2082
+```
+
+`repo` is new. It is the repository root as git reports it, which is not always
+the project directory — in a worktree it is the worktree.
+
+### 3. The rule worth understanding
+
+**A session records the branch it ran on, not the branch you are on now.**
+
+Try it: note a session's branch, check out a different branch, then delete
+`.recall/` and re-sync. The archived branch must not change. Claude Code records
+what was true during the session; detection only fills in what the provider
+could not answer.
+
+### 4. Cases that must not break a sync
+
+- **Not a repository.** Plenty of work happens outside git. `recall sync` must
+  archive normally, with `repo` and `branch` absent.
+- **Detached HEAD.** `branch` must be absent, not `HEAD` — a branch called
+  `HEAD` would collapse every detached session everywhere into one group.
+- **No commits yet.** The branch has a name even with nothing on it, so it is
+  recorded; no commit is invented.
+
+### 5. Commits are deliberately absent
+
+```text
+recall show <id> --summary     # no commit fields
+```
+
+Claude Code records no commit, and a sync runs after a session ends — often days
+later, possibly on a different branch. There is no deterministic way to say
+which commit a session started or ended on, so nothing is filled in. #71 is
+where a deterministic relationship gets worked out.
+
+### 6. Nothing in your repository moves
+
+```bash
+git rev-parse HEAD ; recall sync ; git rev-parse HEAD
+git status --porcelain
+```
+
+HEAD unchanged, and the only thing `git status` should show is `.recall/`.
+
+### Phase 8 checklist
+
+- [ ] A session from a git project records its repository root
+- [ ] The branch is the one the session ran on, not the current one
+- [ ] A branch missing from the provider is filled in by detection
+- [ ] A project outside git archives cleanly with both fields absent
+- [ ] A detached HEAD records no branch
+- [ ] A repository with no commits still records its branch
+- [ ] No commit is ever recorded
+- [ ] `recall sync` moves nothing in the repository

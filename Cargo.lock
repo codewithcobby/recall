@@ -364,11 +364,13 @@ dependencies = [
  "clap",
  "recall-adapters",
  "recall-core",
+ "recall-git",
  "recall-index",
  "recall-store",
  "tempfile",
  "thiserror",
  "time",
+ "zstd",
 ]
 
 [[package]]
@@ -380,6 +382,14 @@ dependencies = [
  "sha2",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "recall-git"
+version = "0.1.0"
+dependencies = [
+ "recall-core",
+ "tempfile",
 ]
 
 [[package]]
