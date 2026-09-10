@@ -10,7 +10,9 @@
 
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 pub(crate) mod local;
 
 pub use claude::ClaudeCode;
 pub use codex::Codex;
+pub use gemini::Gemini;
